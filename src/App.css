@@ -12,8 +12,45 @@
 }
 
 .app-header {
+	position: relative;
 	text-align: center;
 	margin-bottom: 0.5rem;
+}
+
+/* Link de terminação de sessão (Cloudflare Access), canto superior direito. */
+.logout-link {
+	position: absolute;
+	top: -0.25rem;
+	right: 0;
+	width: 44px;
+	height: 44px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border: 1px solid var(--border);
+	border-radius: 50%;
+	background: var(--surface);
+	color: var(--text-soft);
+	transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.logout-link:hover {
+	color: var(--error);
+	border-color: var(--error);
+	background: var(--error-soft);
+	text-decoration: none;
+}
+
+.logout-link svg {
+	width: 20px;
+	height: 20px;
+	fill: currentColor;
+}
+
+/* Em ecrãs largos, o bloco central continua centralizado na página. */
+.app-header-center {
+	max-width: 640px;
+	margin: 0 auto;
 }
 
 .brand {
@@ -324,6 +361,19 @@
 @media (max-width: 560px) {
 	.app {
 		padding: 1.25rem 0.75rem 3rem;
+	}
+
+	/* O cabeçalho deixa o botão de terminar sessão em linha própria. */
+	.app-header {
+		text-align: left;
+	}
+
+	.app-header-center {
+		margin: 0 52px 0 0;
+	}
+
+	.logout-link {
+		top: 0;
 	}
 
 	.add-form .form-row {

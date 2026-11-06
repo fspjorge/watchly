@@ -177,8 +177,22 @@ function feedbackFor(outcome: CheckOutcome, message: string): MonitorFeedback {
 function Header() {
 	return (
 		<header className="app-header">
-			<h1 className="brand">Watchly</h1>
-			<p className="app-subtitle">Vigia alterações em páginas da Internet</p>
+			<div className="app-header-center">
+				<h1 className="brand">Watchly</h1>
+				<p className="app-subtitle">Vigia alterações em páginas da Internet</p>
+			</div>
+			{/* Navegação nativa (sem AJAX): deixa o Cloudflare Access terminar a sessão. */}
+			<a
+				className="logout-link"
+				href="/cdn-cgi/access/logout"
+				title="Terminar sessão"
+				aria-label="Terminar sessão"
+			>
+				<svg viewBox="0 0 24 24" role="img" aria-hidden="true" focusable="false">
+					<path d="M10 3h4a2 2 0 0 1 2 2v3h-2V5h-4v14h4v-3h2v3a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
+					<path d="M20.3 12l-3.3 3.3-1.41-1.41L17.47 12.2H8v-2h9.47l-1.88-1.88L17 6.9z" />
+				</svg>
+			</a>
 		</header>
 	);
 }
