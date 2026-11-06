@@ -1,148 +1,186 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import cloudflareLogo from './assets/cloudflare.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+import { useCallback, useEffect, useRef, useState } from 'react';
+
+import {
+	checkMonitor,
+	listMonitors,
+	type CheckOutcome,
+	type Monitor,
+} from './api.ts';
+import { AddMonitorForm } from './components/AddMonitorForm.tsx';
+import { DiffView } from './components/DiffView.tsx';
+import { MonitorCard, type MonitorFeedback } from './components/MonitorCard.tsx';
+import './App.css';
+
+type View = { kind: 'dashboard' } | { kind: 'diff'; monitorId: string };
 
 function App() {
-  const [count, setCount] = useState(0)
-  const [name, setName] = useState('unknown')
+	const [view, setView] = useState<View>({ kind: 'dashboard' });
+	const [monitors, setMonitors] = useState<Monitor[]>([]);
+	const [reloadKey, setReloadKey] = useState(0);
+	const [loading, setLoading] = useState(true);
+	const [loadError, setLoadError] = useState<string | null>(null);
+	const [busyId, setBusyId] = useState<string | null>(null);
+	const [feedback, setFeedback] = useState<Record<string, MonitorFeedback>>({});
+	const timers = useRef<number[]>([]);
 
-  return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started with Cloudflare</h1>
-          <p>
-            Edit <code>src/App.tsx</code> or <code>worker/index.ts</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <ul style={{ display: 'flex', gap: '1rem', listStyle: 'none', padding: 0 }}>
-          <li>
-            <button
-              className="counter"
-              onClick={() => setCount((count) => count + 1)}
-            >
-              Count is {count}
-            </button>
-          </li>
-          <li>
-          <button
-            className="counter"
-            onClick={() => {
-              fetch('/api/')
-                .then((res) => res.json())
-                .then((data) => setName(data.name))
-            }}
-            aria-label='get name'
-          >
-            Name from API is: {name}
-          </button>
-          </li>
-        </ul>
+	const clearTimers = useCallback(() => {
+		for (const timer of timers.current) window.clearTimeout(timer);
+		timers.current = [];
+	}, []);
 
+	// Carrega (ou recarrega) a lista apenas quando reloadKey muda;
+	// todas as actualizações de estado acontecem depois do await.
+	useEffect(() => {
+		let active = true;
+		listMonitors()
+			.then((data) => {
+				if (active) setMonitors(data);
+			})
+			.catch((cause: unknown) => {
+				if (active) {
+					setLoadError(
+						cause instanceof Error
+							? cause.message
+							: 'Não foi possível carregar as monitorizações.',
+					);
+				}
+			})
+			.finally(() => {
+				if (active) setLoading(false);
+			});
 
-      </section>
+		return () => {
+			active = false;
+		};
+	}, [reloadKey]);
 
-      <div className="ticks"></div>
+	useEffect(() => clearTimers, [clearTimers]);
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-            <li>
-              <a href="https://workers.cloudflare.com/" target="_blank">
-                <img className="button-icon" src={cloudflareLogo} alt="" />
-                Workers Docs
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+	const refresh = () => setReloadKey((key) => key + 1);
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+	const setMonitorFeedback = (id: string, value: MonitorFeedback | null) => {
+		setFeedback((previous) => {
+			const next = { ...previous };
+			if (value) next[id] = value;
+			else delete next[id];
+			return next;
+		});
+	};
+
+	const removeFeedbackAfter = (id: string, ms: number) => {
+		const timer = window.setTimeout(() => setMonitorFeedback(id, null), ms);
+		timers.current.push(timer);
+	};
+
+	const handleAdded = (_monitorId: string) => {
+		// Após adicionar, recarrega a lista: a nova monitorização surge "Por verificar".
+		refresh();
+	};
+
+	const handleCheck = async (monitor: Monitor) => {
+		setBusyId(monitor.id);
+		setMonitorFeedback(monitor.id, null);
+		try {
+			const result = await checkMonitor(monitor.id);
+			setMonitorFeedback(
+				monitor.id,
+				feedbackFor(result.outcome, result.message),
+			);
+			refresh();
+			removeFeedbackAfter(
+				monitor.id,
+				result.outcome === 'changed' ? 8000 : 6000,
+			);
+		} catch (cause) {
+			setMonitorFeedback(monitor.id, {
+				kind: 'error',
+				text: cause instanceof Error ? cause.message : 'A verificação falhou.',
+			});
+			refresh();
+		} finally {
+			setBusyId(null);
+		}
+	};
+
+	if (view.kind === 'diff') {
+		return (
+			<main className="app">
+				<Header />
+				<DiffView
+					key={view.monitorId}
+					monitorId={view.monitorId}
+					onBack={() => setView({ kind: 'dashboard' })}
+				/>
+			</main>
+		);
+	}
+
+	return (
+		<main className="app">
+			<Header />
+
+			<section className="panel card">
+				<h2>Nova monitorização</h2>
+				<p className="panel-hint">
+					Indica um nome e o endereço da página (HTTP ou HTTPS) que pretendes vigiar.
+				</p>
+				<AddMonitorForm onAdded={handleAdded} />
+			</section>
+
+			<section className="panel">
+				<h2>Páginas monitorizadas</h2>
+
+				{loading && <p className="loading">A carregar…</p>}
+
+				{loadError && (
+					<p className="form-error" role="alert">
+						{loadError}
+					</p>
+				)}
+
+				{!loading && !loadError && monitors.length === 0 && (
+					<p className="empty">Ainda não há monitorizações. Adiciona a primeira acima.</p>
+				)}
+
+				<ul className="monitor-list">
+					{monitors.map((monitor) => (
+						<MonitorCard
+							key={monitor.id}
+							monitor={monitor}
+							feedback={feedback[monitor.id] ?? null}
+							busy={busyId === monitor.id}
+							onCheck={handleCheck}
+							onShowDiff={(mon) =>
+								setView({ kind: 'diff', monitorId: mon.id })
+							}
+						/>
+					))}
+				</ul>
+			</section>
+		</main>
+	);
 }
 
-export default App
+function feedbackFor(outcome: CheckOutcome, message: string): MonitorFeedback {
+	switch (outcome) {
+		case 'initial':
+			return { kind: 'info', text: message };
+		case 'unchanged':
+			return { kind: 'ok', text: message };
+		case 'changed':
+			return { kind: 'info', text: message };
+		case 'error':
+			return { kind: 'error', text: message };
+	}
+}
+
+function Header() {
+	return (
+		<header className="app-header">
+			<h1 className="brand">Watchly</h1>
+			<p className="app-subtitle">Vigia alterações em páginas da Internet</p>
+		</header>
+	);
+}
+
+export default App;
