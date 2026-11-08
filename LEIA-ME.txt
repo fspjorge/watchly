@@ -1,0 +1,17 @@
+WATCHLY — correcção dos project references TypeScript
+
+Substituir na raiz de C:\Work\Watchly apenas estes dois ficheiros:
+- tsconfig.json
+- tsconfig.worker.json
+
+Manter sem alterações:
+- tsconfig.app.json
+- tsconfig.node.json
+- package.json
+
+Depois executar:
+  npm run build
+  npm test
+
+O tsconfig.json da raiz volta a referenciar os três projectos (app, node e worker).
+O tsconfig.worker.json compila apenas o Worker de produção e exclui testes/utilitários Node.
