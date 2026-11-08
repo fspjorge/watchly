@@ -35,15 +35,29 @@ export type MonitorDiff = {
 	chunks: DiffChunk[];
 };
 
-class ApiRequestError extends Error {
-	constructor(message: string) {
+/** Erro de API com o estado HTTP; 401/403 sinalizam fim de sessão. */
+export class ApiRequestError extends Error {
+	status: number;
+
+	constructor(status: number, message: string) {
 		super(message);
+		this.status = status;
 	}
+}
+
+/** Indica se o erro corresponde a sessão ausente/expirada ou acesso negado. */
+export function isAuthError(error: unknown): boolean {
+	return (
+		error instanceof ApiRequestError &&
+		(error.status === 401 || error.status === 403)
+	);
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	const response = await fetch(path, {
 		headers: { 'content-type': 'application/json' },
+		// Dados pessoais: nunca ler de caches do browser.
+		cache: 'no-store',
 		...init,
 	});
 
@@ -51,7 +65,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	try {
 		body = await response.json();
 	} catch {
-		// respostas sem corpo JSON
+		// respostas sem corpo JSON (ex.: 204)
 	}
 
 	if (!response.ok) {
@@ -59,10 +73,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 			typeof body === 'object' && body !== null && 'error' in body
 				? String((body as { error: unknown }).error)
 				: `O servidor respondeu com o estado ${response.status}.`;
-		throw new ApiRequestError(message);
+		if (response.status === 401 || response.status === 403) {
+			// Sessão terminou/expirada: sinaliza globalmente para que a
+			// aplicação limpe os dados em ecrã (ver App.tsx).
+			window.dispatchEvent(
+				new CustomEvent<string>('watchly:auth-error', { detail: message }),
+			);
+		}
+		throw new ApiRequestError(response.status, message);
 	}
 
 	return body as T;
+}
+
+export type User = {
+	id: string;
+	email: string;
+	name: string | null;
+	created_at: string;
+};
+
+export async function getMe(): Promise<User> {
+	const { user } = await request<{ user: User }>('/api/me');
+	return user;
 }
 
 export async function listMonitors(): Promise<Monitor[]> {
@@ -76,6 +109,21 @@ export async function addMonitor(name: string, url: string): Promise<Monitor> {
 		body: JSON.stringify({ name, url }),
 	});
 	return monitor;
+}
+
+export async function updateMonitor(
+	id: string,
+	input: { name?: string; url?: string },
+): Promise<Monitor> {
+	const { monitor } = await request<{ monitor: Monitor }>(`/api/monitors/${id}`, {
+		method: 'PATCH',
+		body: JSON.stringify(input),
+	});
+	return monitor;
+}
+
+export async function deleteMonitor(id: string): Promise<void> {
+	await request<void>(`/api/monitors/${id}`, { method: 'DELETE' });
 }
 
 export async function checkMonitor(id: string): Promise<{ outcome: CheckOutcome; message: string }> {

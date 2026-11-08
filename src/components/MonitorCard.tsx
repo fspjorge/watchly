@@ -1,4 +1,5 @@
 import { STATUS_LABELS, type Monitor } from '../api.ts';
+import { EditMonitorForm } from './EditMonitorForm.tsx';
 
 export type FeedbackKind = 'ok' | 'info' | 'error';
 
@@ -11,8 +12,12 @@ type Props = {
 	monitor: Monitor;
 	feedback: MonitorFeedback | null;
 	busy: boolean;
+	editing: boolean;
 	onCheck: (monitor: Monitor) => void;
 	onShowDiff: (monitor: Monitor) => void;
+	onEdit: (monitor: Monitor) => void;
+	onEditDone: () => void;
+	onDelete: (monitor: Monitor) => void;
 };
 
 const STATUS_CLASSES: Record<Monitor['last_status'], string> = {
@@ -22,7 +27,17 @@ const STATUS_CLASSES: Record<Monitor['last_status'], string> = {
 	error: 'error',
 };
 
-export function MonitorCard({ monitor, feedback, busy, onCheck, onShowDiff }: Props) {
+export function MonitorCard({
+	monitor,
+	feedback,
+	busy,
+	editing,
+	onCheck,
+	onShowDiff,
+	onEdit,
+	onEditDone,
+	onDelete,
+}: Props) {
 	// Se a última verificação falhou, o erro registado na base de dados
 	// é apresentado sempre que não haja mensagem mais recente.
 	const dbError =
@@ -46,27 +61,48 @@ export function MonitorCard({ monitor, feedback, busy, onCheck, onShowDiff }: Pr
 				</span>
 			</div>
 
-			<p className="monitor-meta">
-				Última verificação:{' '}
-				<strong>
-					{monitor.last_checked_at ? formatDate(monitor.last_checked_at) : 'nunca'}
-				</strong>
-			</p>
+			{editing ? (
+				<EditMonitorForm
+					monitor={monitor}
+					onSaved={onEditDone}
+					onCancel={onEditDone}
+				/>
+			) : (
+				<>
+					<p className="monitor-meta">
+						Última verificação:{' '}
+						<strong>
+							{monitor.last_checked_at ? formatDate(monitor.last_checked_at) : 'nunca'}
+						</strong>
+					</p>
 
-			{message && (
-				<p className="monitor-message" data-kind={message.kind}>
-					{message.text}
-				</p>
+					{message && (
+						<p className="monitor-message" data-kind={message.kind}>
+							{message.text}
+						</p>
+					)}
+
+					<div className="monitor-actions">
+						<button
+							className="btn"
+							type="button"
+							onClick={() => onCheck(monitor)}
+							disabled={busy}
+						>
+							{busy ? 'A verificar…' : 'Verificar agora'}
+						</button>
+						<button className="btn" type="button" onClick={() => onShowDiff(monitor)}>
+							Ver diferenças
+						</button>
+						<button className="btn subtle" type="button" onClick={() => onEdit(monitor)}>
+							Editar
+						</button>
+						<button className="btn subtle danger" type="button" onClick={() => onDelete(monitor)}>
+							Apagar
+						</button>
+					</div>
+				</>
 			)}
-
-			<div className="monitor-actions">
-				<button className="btn" type="button" onClick={() => onCheck(monitor)} disabled={busy}>
-					{busy ? 'A verificar…' : 'Verificar agora'}
-				</button>
-				<button className="btn" type="button" onClick={() => onShowDiff(monitor)}>
-					Ver diferenças
-				</button>
-			</div>
 		</li>
 	);
 }

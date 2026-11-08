@@ -90,6 +90,25 @@
 }
 
 /* ------------------------------------------------------------------ */
+/* Edição de monitorização                                              */
+/* ------------------------------------------------------------------ */
+
+.edit-title {
+	font-weight: 600;
+	font-size: 0.92rem;
+	margin-bottom: 0.4rem;
+}
+
+.edit-url-note {
+	font-size: 0.82rem;
+	background: var(--warn-soft);
+	color: var(--warn);
+	border-radius: 8px;
+	padding: 0.5rem 0.75rem;
+	margin-bottom: 0.75rem;
+}
+
+/* ------------------------------------------------------------------ */
 /* Formulário de nova monitorização                                     */
 /* ------------------------------------------------------------------ */
 
@@ -136,6 +155,46 @@
 }
 
 /* ------------------------------------------------------------------ */
+/* Utilizador autenticado (cabeçalho)                                   */
+/* ------------------------------------------------------------------ */
+
+.user-info {
+	position: absolute;
+	top: 0;
+	right: 58px;
+	max-width: 220px;
+	text-align: right;
+	line-height: 1.2;
+	font-size: 0.8rem;
+	color: var(--text-soft);
+}
+
+.user-info .user-name {
+	display: block;
+	font-weight: 600;
+	color: var(--text);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.user-info .user-email {
+	display: block;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.auth-error {
+	margin: 0;
+	padding: 0.85rem 1rem;
+	border-radius: var(--radius);
+	background: var(--error-soft);
+	color: var(--error);
+	font-size: 0.92rem;
+}
+
+/* ------------------------------------------------------------------ */
 /* Botões                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -162,6 +221,23 @@
 .btn:disabled {
 	opacity: 0.55;
 	cursor: not-allowed;
+}
+
+.btn.subtle {
+	border-color: transparent;
+	background: transparent;
+	color: var(--text-soft);
+}
+
+.btn.subtle:hover:not(:disabled) {
+	background: var(--accent-soft);
+	border-color: transparent;
+	color: var(--accent);
+}
+
+.btn.subtle.danger:hover:not(:disabled) {
+	background: var(--error-soft);
+	color: var(--error);
 }
 
 .btn.primary {

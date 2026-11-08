@@ -2,9 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
 	checkMonitor,
+	deleteMonitor as deleteMonitorApi,
+	getMe,
 	listMonitors,
 	type CheckOutcome,
 	type Monitor,
+	type User,
 } from './api.ts';
 import { AddMonitorForm } from './components/AddMonitorForm.tsx';
 import { DiffView } from './components/DiffView.tsx';
@@ -15,11 +18,13 @@ type View = { kind: 'dashboard' } | { kind: 'diff'; monitorId: string };
 
 function App() {
 	const [view, setView] = useState<View>({ kind: 'dashboard' });
+	const [user, setUser] = useState<User | null>(null);
 	const [monitors, setMonitors] = useState<Monitor[]>([]);
 	const [reloadKey, setReloadKey] = useState(0);
 	const [loading, setLoading] = useState(true);
 	const [loadError, setLoadError] = useState<string | null>(null);
 	const [busyId, setBusyId] = useState<string | null>(null);
+	const [editingId, setEditingId] = useState<string | null>(null);
 	const [feedback, setFeedback] = useState<Record<string, MonitorFeedback>>({});
 	const timers = useRef<number[]>([]);
 
@@ -28,29 +33,46 @@ function App() {
 		timers.current = [];
 	}, []);
 
-	// Carrega (ou recarrega) a lista apenas quando reloadKey muda;
-	// todas as actualizações de estado acontecem depois do await.
+	// Arranque: perfil (/api/me) e monitorizações em paralelo (Promise.all),
+	// para que uma resposta não deixe dados antigos renderizados sob outra
+	// identidade. Qualquer 401/403 (aqui ou mais tarde, por via do evento
+	// 'watchly:auth-error') limpa o utilizador e a lista: nada é apresentado.
 	useEffect(() => {
 		let active = true;
-		listMonitors()
-			.then((data) => {
-				if (active) setMonitors(data);
-			})
-			.catch((cause: unknown) => {
-				if (active) {
-					setLoadError(
-						cause instanceof Error
-							? cause.message
-							: 'Não foi possível carregar as monitorizações.',
-					);
-				}
-			})
-			.finally(() => {
+		const onAuthError = (event: Event) => {
+			if (!active) return;
+			const message =
+				event instanceof CustomEvent && typeof event.detail === 'string'
+					? event.detail
+					: 'A tua sessão terminou. Volta a autenticar-te.';
+			setUser(null);
+			setMonitors([]);
+			setLoadError(message);
+		};
+		window.addEventListener('watchly:auth-error', onAuthError);
+		(async () => {
+			try {
+				const [me, data] = await Promise.all([getMe(), listMonitors()]);
+				if (!active) return;
+				setUser(me);
+				setMonitors(data);
+				setLoadError(null);
+			} catch (cause) {
+				if (!active) return;
+				setUser(null);
+				setLoadError(
+					cause instanceof Error
+						? cause.message
+						: 'Não foi possível carregar os teus dados. Volta a autenticar-te.',
+				);
+			} finally {
 				if (active) setLoading(false);
-			});
+			}
+		})();
 
 		return () => {
 			active = false;
+			window.removeEventListener('watchly:auth-error', onAuthError);
 		};
 	}, [reloadKey]);
 
@@ -102,10 +124,38 @@ function App() {
 		}
 	};
 
+	const handleDelete = (monitor: Monitor) => {
+		const confirmed = window.confirm(
+			`Apagar "${monitor.name}"? As versões guardadas desta página serão também apagadas. Esta operação é irreversível.`,
+		);
+		if (!confirmed) return;
+
+		setBusyId(monitor.id);
+		(async () => {
+			try {
+				await deleteMonitorApi(monitor.id);
+				setMonitorFeedback(monitor.id, null);
+			} catch (cause) {
+				setMonitorFeedback(monitor.id, {
+					kind: 'error',
+					text: cause instanceof Error ? cause.message : 'Não foi possível apagar.',
+				});
+			} finally {
+				setBusyId(null);
+				refresh();
+			}
+		})();
+	};
+
+	const handleEditDone = () => {
+		setEditingId(null);
+		refresh();
+	};
+
 	if (view.kind === 'diff') {
 		return (
 			<main className="app">
-				<Header />
+				<Header user={user} />
 				<DiffView
 					key={view.monitorId}
 					monitorId={view.monitorId}
@@ -117,46 +167,52 @@ function App() {
 
 	return (
 		<main className="app">
-			<Header />
+			<Header user={user} />
 
-			<section className="panel card">
-				<h2>Nova monitorização</h2>
-				<p className="panel-hint">
-					Indica um nome e o endereço da página (HTTP ou HTTPS) que pretendes vigiar.
+			{loadError && (
+				<p className="auth-error" role="alert">
+					{loadError}
 				</p>
-				<AddMonitorForm onAdded={handleAdded} />
-			</section>
+			)}
 
-			<section className="panel">
-				<h2>Páginas monitorizadas</h2>
-
-				{loading && <p className="loading">A carregar…</p>}
-
-				{loadError && (
-					<p className="form-error" role="alert">
-						{loadError}
+			{user && (
+				<section className="panel card">
+					<h2>Nova monitorização</h2>
+					<p className="panel-hint">
+						Indica um nome e o endereço da página (HTTP ou HTTPS) que pretendes vigiar.
 					</p>
-				)}
+					<AddMonitorForm onAdded={handleAdded} />
+				</section>
+			)}
 
-				{!loading && !loadError && monitors.length === 0 && (
-					<p className="empty">Ainda não há monitorizações. Adiciona a primeira acima.</p>
-				)}
+			{user && (
+				<section className="panel">
+					<h2>Páginas monitorizadas</h2>
 
-				<ul className="monitor-list">
-					{monitors.map((monitor) => (
-						<MonitorCard
-							key={monitor.id}
-							monitor={monitor}
-							feedback={feedback[monitor.id] ?? null}
-							busy={busyId === monitor.id}
-							onCheck={handleCheck}
-							onShowDiff={(mon) =>
-								setView({ kind: 'diff', monitorId: mon.id })
-							}
-						/>
-					))}
-				</ul>
-			</section>
+					{loading && <p className="loading">A carregar…</p>}
+
+					{!loading && monitors.length === 0 && (
+						<p className="empty">Ainda não tens monitorizações. Adiciona a primeira acima.</p>
+					)}
+
+					<ul className="monitor-list">
+						{monitors.map((monitor) => (
+							<MonitorCard
+								key={monitor.id}
+								monitor={monitor}
+								feedback={feedback[monitor.id] ?? null}
+								busy={busyId === monitor.id}
+								editing={editingId === monitor.id}
+								onCheck={handleCheck}
+								onShowDiff={(mon) => setView({ kind: 'diff', monitorId: mon.id })}
+								onEdit={(mon) => setEditingId(mon.id)}
+								onEditDone={handleEditDone}
+								onDelete={handleDelete}
+							/>
+						))}
+					</ul>
+				</section>
+			)}
 		</main>
 	);
 }
@@ -174,13 +230,19 @@ function feedbackFor(outcome: CheckOutcome, message: string): MonitorFeedback {
 	}
 }
 
-function Header() {
+function Header({ user }: { user: User | null }) {
 	return (
 		<header className="app-header">
 			<div className="app-header-center">
 				<h1 className="brand">Watchly</h1>
 				<p className="app-subtitle">Vigia alterações em páginas da Internet</p>
 			</div>
+			{user && (
+				<div className="user-info" title={user.email}>
+					<span className="user-name">{user.name ?? user.email}</span>
+					<span className="user-email">{user.email}</span>
+				</div>
+			)}
 			{/* Navegação nativa (sem AJAX): deixa o Cloudflare Access terminar a sessão. */}
 			<a
 				className="logout-link"
