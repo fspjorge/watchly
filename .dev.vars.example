@@ -1,0 +1,19 @@
+# Exemplo de variáveis de desenvolvimento local (.dev.vars).
+# Copiar para .dev.vars (ficheiro não versionado, ver .gitignore).
+# O servidor `npm run dev` reinicia automaticamente quando este ficheiro muda.
+
+# ACTIVAR o modo de identidade de desenvolvimento (fail-closed em produção).
+# Só é aceite quando o hostname do pedido é localhost ou 127.0.0.1.
+DEV_AUTH=true
+
+# Identidade de teste em uso. Para testar o isolamento entre duas contas,
+# alternar os valores (A ↔ B) e deixar o servidor reiniciar.
+# Exemplo A: DEV_EMAIL=dev-user-a@example.test / DEV_NAME=Utilizador A (dev)
+# Exemplo B: DEV_EMAIL=dev-user-b@example.test / DEV_NAME=Utilizador B (dev)
+DEV_EMAIL=dev-user-a@example.test
+DEV_NAME=Utilizador A (dev)
+
+# Em desenvolvimento DEV_AUTH pode providenciar a identidade, dispensando o
+# JWT do Cloudflare Access. Os restantes valores são os mesmos de produção:
+# configurar aqui também TEAM_DOMAIN/ACCESS_AUD se quiseres verificar JWTs
+# reais localmente (não necessário para os testes de isolamento).
