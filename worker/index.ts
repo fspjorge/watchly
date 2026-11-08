@@ -2,78 +2,181 @@ import {
 	ApiError,
 	checkMonitor,
 	createMonitor,
+	deleteMonitor,
 	getMonitorDiff,
 	listMonitors,
+	updateMonitor,
 	type MonitorDiff,
 } from './api.ts';
+import { AuthError, authenticateUser, type AuthEnv, type UserRecord } from './auth.ts';
+import { D1Queryable } from './db.ts';
+import type { Queryable } from './db.ts';
 
-export default {
+export const handler = {
 	fetch: handleRequest,
 } satisfies ExportedHandler<Env>;
 
-function json(data: unknown, status = 200): Response {
+async function handleRequest(request: Request, env: Env): Promise<Response> {
+	return serveApi(request, env, new D1Queryable(env.watchly_db));
+}
+
+async function json(data: unknown, status = 200): Promise<Response> {
 	return new Response(JSON.stringify(data), {
 		status,
-		headers: { 'content-type': 'application/json; charset=utf-8' },
+		headers: {
+			'content-type': 'application/json; charset=utf-8',
+			// Dados por utilizador: nunca podem ser guardados em caches
+			// partilhadas nem reutilizados após troca de sessão.
+			'cache-control': 'no-store',
+		},
 	});
 }
 
-const idPathRe = /^\/api\/monitors\/([0-9a-f-]{36})\/(check|diff)$/;
+const MUTATING_METHODS = new Set(['POST', 'PATCH', 'DELETE']);
 
-async function handleRequest(request: Request, env: Env): Promise<Response> {
+/**
+ * Indica se um pedido de escrita tem sinais de origem cruzada que o
+ * tornam um alvo de CSRF (cookies do Cloudflare Access são enviados por
+ * browsers mesmo em pedidos cross-site).
+ * Estratégia:
+ *   - cabeçalho Origin presente → tem de coincidir com a origem do pedido;
+ *   - sem Origin mas com Sec-Fetch-Site → só same-origin/none é aceite;
+ *   - sem ambos (clientes sem browser, ex.: curl) → aceite.
+ */
+function isSameOriginWrite(request: Request): boolean {
+	const origin = request.headers.get('origin');
+	if (origin) {
+		try {
+			return new URL(origin).origin === new URL(request.url).origin;
+		} catch {
+			return false;
+		}
+	}
+	const site = request.headers.get('sec-fetch-site');
+	if (site) return site === 'same-origin' || site === 'none';
+	return true;
+}
+
+const idPathRe = /^\/api\/monitors\/([0-9a-fA-F-]{36})\/(check|diff)$/;
+const idRootRe = /^\/api\/monitors\/([0-9a-fA-F-]{36})$/;
+
+/** Pipeline da API, testável com qualquer Queryable. */
+export async function serveApi(
+	request: Request,
+	env: AuthEnv,
+	db: Queryable,
+): Promise<Response> {
 	try {
 		const url = new URL(request.url);
-		const db = env.watchly_db;
+
+		// Middleware de autenticação para TODAS as rotas /api/*.
+		if (!url.pathname.startsWith('/api/')) {
+			return await json({ error: 'Recurso não encontrado.' }, 404);
+		}
+
+		// Protecção CSRF: rotas de escrita só aceitáveis da mesma origem.
+		// (Antes da autenticação, para que pedidos cross-site nem cheguem
+		// a consumir verificação de JWT.)
+		if (MUTATING_METHODS.has(request.method) && !isSameOriginWrite(request)) {
+			return await json({ error: 'Pedido de outra origem rejeitado.' }, 403);
+		}
+
+		const user = await authenticateUser(request, env, db);
+
+		if (url.pathname === '/api/me' && request.method === 'GET') {
+			return await json({ user: publicUser(user) });
+		}
 
 		if (url.pathname === '/api/monitors') {
 			if (request.method === 'GET') {
-				const monitors = await listMonitors(db);
-				return json({ monitors });
+				const monitors = await listMonitors(db, user);
+				return await json({ monitors });
 			}
 
 			if (request.method === 'POST') {
 				const body: unknown = await parseJsonBody(request);
+				// user_id do corpo é ignorado SEMPRE: o proprietário é o autenticado.
 				const monitor = await createMonitor(
 					db,
+					user,
 					body as { name?: unknown; url?: unknown },
 				);
-				return json({ monitor }, 201);
+				return await json({ monitor }, 201);
 			}
 
-			return json({ error: 'Método não suportado.' }, 405);
+			return await json({ error: 'Método não suportado.' }, 405);
 		}
 
 		const idMatch = idPathRe.exec(url.pathname);
-		if (idMatch && request.method === 'POST' && idMatch[2] === 'check') {
-			const result = await checkMonitor(db, idMatch[1]);
-			return json(
+		if (idMatch && request.method === 'POST') {
+			if (idMatch[2] !== 'check') {
+				return await json({ error: 'Recurso não encontrado.' }, 404);
+			}
+			const result = await checkMonitor(db, user, idMatch[1]);
+			return await json(
 				{ outcome: result.outcome, message: result.message },
 				result.outcome === 'error' ? 502 : 200,
 			);
 		}
 
 		if (idMatch && request.method === 'GET' && idMatch[2] === 'diff') {
-			const diff = await getMonitorDiff(db, idMatch[1]);
+			const diff = await getMonitorDiff(db, user, idMatch[1]);
 			if (!diff) {
-				return json(
+				return await json(
 					{
 						error:
-							'Ainda não há duas versões para comparar. Efectua a verificação inicial e, depois de o conteúdo mudar, volta a verificar.',
+							'Ainda não há duas versões do URL actual para comparar. Efectua a verificação inicial e, depois de o conteúdo mudar, volta a verificar.',
 					},
 					404,
 				);
 			}
-			return json({ diff: serialiseDiff(diff) });
+			return await json({ diff: serialiseDiff(diff) });
 		}
 
-		return json({ error: 'Recurso não encontrado.' }, 404);
+		const rootMatch = idRootRe.exec(url.pathname);
+		if (rootMatch) {
+			if (request.method === 'PATCH') {
+				const body: unknown = await parseJsonBody(request);
+				const monitor = await updateMonitor(
+					db,
+					user,
+					rootMatch[1],
+					body as { name?: unknown; url?: unknown },
+				);
+				return await json({ monitor });
+			}
+
+			if (request.method === 'DELETE') {
+				await deleteMonitor(db, user, rootMatch[1]);
+				return new Response(null, {
+					status: 204,
+					headers: { 'cache-control': 'no-store' },
+				});
+			}
+
+			return await json({ error: 'Método não suportado.' }, 405);
+		}
+
+		return await json({ error: 'Recurso não encontrado.' }, 404);
 	} catch (error) {
 		if (error instanceof ApiError) {
-			return json({ error: error.message }, error.status);
+			return await json({ error: error.message }, error.status);
+		}
+		if (error instanceof AuthError) {
+			return await json({ error: error.message }, error.status);
 		}
 		console.error('Erro inesperado na API', error);
-		return json({ error: 'Erro inesperado no servidor.' }, 500);
+		return await json({ error: 'Erro inesperado no servidor.' }, 500);
 	}
+}
+
+function publicUser(user: UserRecord): unknown {
+	return {
+		id: user.id,
+		email: user.email,
+		name: user.name,
+		created_at: user.created_at,
+	};
 }
 
 function serialiseDiff(diff: MonitorDiff): unknown {
@@ -93,6 +196,16 @@ function serialiseDiff(diff: MonitorDiff): unknown {
 }
 
 async function parseJsonBody(request: Request): Promise<Record<string, unknown>> {
+	// Exige application/json: além de validação de entrada, força preflight
+	// CORS em pedidos cross-origin com corpo (date-blind CSRF de fetch fica
+	// bloqueado no gate de Origin/Sec-Fetch-Site).
+	const contentType = (request.headers.get('content-type') ?? '').toLowerCase();
+	if (!contentType.includes('application/json')) {
+		throw new ApiError(
+			415,
+			'O corpo da mensagem deve ser JSON com Content-Type: application/json.',
+		);
+	}
 	let body: unknown;
 	try {
 		body = await request.json();
@@ -104,3 +217,5 @@ async function parseJsonBody(request: Request): Promise<Record<string, unknown>>
 	}
 	return body as Record<string, unknown>;
 }
+
+export default handler;

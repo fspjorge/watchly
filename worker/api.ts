@@ -1,6 +1,8 @@
 import { diffLines, type DiffChunk } from './diff.ts';
 import { extractTextFromHtml, normalizeText } from './extract.ts';
 import { fetchPage, ScrapeError, validateMonitorUrl } from './scrape.ts';
+import type { Queryable } from './db.ts';
+import type { UserRecord } from './auth.ts';
 
 /** SHA-256 do conteúdo normalizado, em hexadecimal. */
 export async function sha256Hex(content: string): Promise<string> {
@@ -19,6 +21,7 @@ export type MonitorRow = {
 	id: string;
 	name: string;
 	url: string;
+	user_id: string | null;
 	created_at: string;
 	last_checked_at: string | null;
 	last_status: MonitorStatus;
@@ -34,6 +37,7 @@ export type MonitorCheckResult =
 export type SnapshotRow = {
 	id: number;
 	monitor_id: string;
+	source_url: string;
 	content: string;
 	content_hash: string;
 	captured_at: string;
@@ -48,108 +52,177 @@ export class ApiError extends Error {
 	}
 }
 
-export async function listMonitors(db: D1Database): Promise<MonitorRow[]> {
-	const { results } = await db
-		.prepare(
-			`SELECT id, name, url, created_at, last_checked_at, last_status, last_error
-			 FROM monitors ORDER BY created_at DESC`,
-		)
-		.all<MonitorRow>();
-	return results;
+/**
+ * Lista as monitorizações do utilizador autenticado.
+ * Registos com user_id IS NULL (antigos, ainda por associar) ficam invisíveis.
+ */
+export async function listMonitors(db: Queryable, user: UserRecord): Promise<MonitorRow[]> {
+	return db.all<MonitorRow>(
+		`SELECT id, name, url, user_id, created_at, last_checked_at, last_status, last_error
+		 FROM monitors WHERE user_id = ? ORDER BY created_at DESC`,
+		[user.id],
+	);
 }
 
 const UUID_RE =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export async function createMonitor(
-	db: D1Database,
-	input: { name?: unknown; url?: unknown },
-): Promise<MonitorRow> {
-	const name = typeof input.name === 'string' ? input.name.trim() : '';
-	const rawUrl = typeof input.url === 'string' ? input.url.trim() : '';
-
+function validateName(input: unknown): string {
+	const name = typeof input === 'string' ? input.trim() : '';
 	if (name.length === 0) {
 		throw new ApiError(400, 'Indica o nome da monitorização.');
 	}
 	if (name.length > 120) {
 		throw new ApiError(400, 'O nome é demasiado longo (máximo 120 caracteres).');
 	}
-	if (rawUrl.length === 0) {
+	return name;
+}
+
+function validateUrlOr400(raw: unknown): string {
+	const text = typeof raw === 'string' ? raw.trim() : '';
+	if (text.length === 0) {
 		throw new ApiError(400, 'Indica o URL da página.');
 	}
-
-	let url: string;
 	try {
-		url = validateMonitorUrl(rawUrl);
+		return validateMonitorUrl(text);
 	} catch (error) {
 		throw new ApiError(400, error instanceof Error ? error.message : 'URL inválido.');
 	}
+}
 
+export async function createMonitor(
+	db: Queryable,
+	user: UserRecord,
+	input: { name?: unknown; url?: unknown },
+): Promise<MonitorRow> {
+	const name = validateName(input.name);
+	const url = validateUrlOr400(input.url);
 	const id = crypto.randomUUID();
 
 	await db
-		.prepare(
-			`INSERT INTO monitors (id, name, url, last_status)
-			 VALUES (?, ?, ?, 'pending')`,
-		)
-		.bind(id, name, url)
-		.run();
+		.run(
+			`INSERT INTO monitors (id, name, url, user_id, last_status)
+			 VALUES (?, ?, ?, ?, 'pending')`,
+			[id, name, url, user.id],
+		);
 
-	const created = await getMonitor(db, id);
+	const created = await getOwnedMonitor(db, user, id);
 	if (!created) {
 		throw new ApiError(500, 'Não foi possível criar a monitorização.');
 	}
 	return created;
 }
 
-async function getMonitor(db: D1Database, id: string): Promise<MonitorRow | null> {
+/** Localiza uma monitorização por id E proprietário; sem propriedade → 404. */
+async function getOwnedMonitor(
+	db: Queryable,
+	user: UserRecord,
+	id: string,
+): Promise<MonitorRow | null> {
 	if (!UUID_RE.test(id)) return null;
-	return db
-		.prepare(
-			`SELECT id, name, url, created_at, last_checked_at, last_status, last_error
-			 FROM monitors WHERE id = ?`,
-		)
-		.bind(id)
-		.first<MonitorRow>();
+	return db.one<MonitorRow>(
+		`SELECT id, name, url, user_id, created_at, last_checked_at, last_status, last_error
+		 FROM monitors WHERE id = ? AND user_id = ?`,
+		[id, user.id],
+	);
+}
+
+async function requireOwnedMonitor(db: Queryable, user: UserRecord, id: string): Promise<MonitorRow> {
+	const monitor = await getOwnedMonitor(db, user, id);
+	if (!monitor) {
+		// 404: não revela a existência de recursos de outros utilizadores.
+		throw new ApiError(404, 'Monitorização não encontrada.');
+	}
+	return monitor;
+}
+
+/**
+ * Edita nome e/ou URL. Ao alterar o URL:
+ *  - os snapshots antigos são preservados com o seu source_url;
+ *  - o estado passa a 'pending' e a primeira verificação do novo URL cria
+ *    uma referência nova, sem comparação com o conteúdo do URL anterior.
+ */
+export async function updateMonitor(
+	db: Queryable,
+	user: UserRecord,
+	id: string,
+	input: { name?: unknown; url?: unknown },
+): Promise<MonitorRow> {
+	const monitor = await requireOwnedMonitor(db, user, id);
+
+	const hasName = input.name !== undefined;
+	const hasUrl = input.url !== undefined;
+	if (!hasName && !hasUrl) {
+		throw new ApiError(400, 'Indica pelo menos o nome ou o URL a actualizar.');
+	}
+
+	const name = hasName ? validateName(input.name) : monitor.name;
+	let url = monitor.url;
+	let urlChanged = false;
+	if (hasUrl) {
+		const newUrl = validateUrlOr400(input.url);
+		urlChanged = newUrl !== monitor.url;
+		url = newUrl;
+	}
+
+	await db.run(
+		urlChanged
+			? `UPDATE monitors
+				 SET name = ?, url = ?, last_status = 'pending', last_checked_at = NULL, last_error = NULL
+				 WHERE id = ? AND user_id = ?`
+			: `UPDATE monitors SET name = ? WHERE id = ? AND user_id = ?`,
+		urlChanged ? [name, url, id, user.id] : [name, id, user.id],
+	);
+
+	const updated = await getOwnedMonitor(db, user, id);
+	if (!updated) {
+		throw new ApiError(500, 'Não foi possível actualizar a monitorização.');
+	}
+	return updated;
+}
+
+/** Apaga a monitorização do utilizador e os respectivos snapshots. */
+export async function deleteMonitor(db: Queryable, user: UserRecord, id: string): Promise<void> {
+	await requireOwnedMonitor(db, user, id);
+	if (!UUID_RE.test(id)) return;
+	// Instrução única: os snapshots são apagados por ON DELETE CASCADE
+	// (FK de snapshots.monitor_id, declarada em 0001 e activa em D1 e nos
+	// testes). Elimina a janela de inconsistência entre dois statements.
+	await db.run('DELETE FROM monitors WHERE id = ? AND user_id = ?', [id, user.id]);
 }
 
 async function getLatestSnapshot(
-	db: D1Database,
-	monitorId: string,
+	db: Queryable,
+	monitor: MonitorRow,
 ): Promise<SnapshotRow | null> {
-	return db
-		.prepare(
-			`SELECT id, monitor_id, content, content_hash, captured_at
-			 FROM snapshots WHERE monitor_id = ?
-			 ORDER BY captured_at DESC, id DESC LIMIT 1`,
-		)
-		.bind(monitorId)
-		.first<SnapshotRow>();
+	return db.one<SnapshotRow>(
+		`SELECT id, monitor_id, source_url, content, content_hash, captured_at
+		 FROM snapshots WHERE monitor_id = ? AND source_url = ?
+		 ORDER BY captured_at DESC, id DESC LIMIT 1`,
+		[monitor.id, monitor.url],
+	);
 }
 
-async function markError(db: D1Database, id: string, message: string): Promise<void> {
-	await db
-		.prepare(
-			`UPDATE monitors
-			 SET last_checked_at = CURRENT_TIMESTAMP, last_status = 'error', last_error = ?
-			 WHERE id = ?`,
-		)
-		.bind(message.slice(0, 500), id)
-		.run();
+async function markError(db: Queryable, id: string, message: string): Promise<void> {
+	await db.run(
+		`UPDATE monitors
+		 SET last_checked_at = CURRENT_TIMESTAMP, last_status = 'error', last_error = ?
+		 WHERE id = ?`,
+		[message.slice(0, 500), id],
+	);
 }
 
 /**
  * Verifica uma monitorização: recolhe a página, compara com a última versão
- * e grava um novo snapshot apenas quando o conteúdo mudou.
+ * do MESMO URL e grava um novo snapshot apenas quando o conteúdo mudou.
+ * A propriedade é confirmada antes de qualquer recolha.
  */
 export async function checkMonitor(
-	db: D1Database,
+	db: Queryable,
+	user: UserRecord,
 	id: string,
 ): Promise<MonitorCheckResult> {
-	const monitor = await getMonitor(db, id);
-	if (!monitor) {
-		throw new ApiError(404, 'Monitorização não encontrada.');
-	}
+	const monitor = await requireOwnedMonitor(db, user, id);
 
 	if (
 		monitor.last_checked_at &&
@@ -172,55 +245,45 @@ export async function checkMonitor(
 	}
 
 	const contentHash = await sha256Hex(normalized);
-	const latest = await getLatestSnapshot(db, id);
+	const latest = await getLatestSnapshot(db, monitor);
 
 	if (!latest) {
-		await db
-			.prepare(
-				`INSERT INTO snapshots (monitor_id, content, content_hash, captured_at)
-				 VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
-			)
-			.bind(id, normalized, contentHash)
-			.run();
-		await db
-			.prepare(
-				`UPDATE monitors
-				 SET last_checked_at = CURRENT_TIMESTAMP, last_status = 'unchanged', last_error = NULL
-				 WHERE id = ?`,
-			)
-			.bind(id)
-			.run();
+		await db.run(
+			`INSERT INTO snapshots (monitor_id, source_url, content, content_hash, captured_at)
+			 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+			[id, monitor.url, normalized, contentHash],
+		);
+		await db.run(
+			`UPDATE monitors
+			 SET last_checked_at = CURRENT_TIMESTAMP, last_status = 'unchanged', last_error = NULL
+			 WHERE id = ?`,
+			[id],
+		);
 		return { outcome: 'initial', message: 'Referência inicial criada.' };
 	}
 
 	if (latest.content_hash === contentHash) {
 		// Sem alterações: não se cria um novo snapshot.
-		await db
-			.prepare(
-				`UPDATE monitors
-				 SET last_checked_at = CURRENT_TIMESTAMP, last_status = 'unchanged', last_error = NULL
-				 WHERE id = ?`,
-			)
-			.bind(id)
-			.run();
+		await db.run(
+			`UPDATE monitors
+			 SET last_checked_at = CURRENT_TIMESTAMP, last_status = 'unchanged', last_error = NULL
+			 WHERE id = ?`,
+			[id],
+		);
 		return { outcome: 'unchanged', message: 'Sem alterações.' };
 	}
 
-	await db
-		.prepare(
-			`INSERT INTO snapshots (monitor_id, content, content_hash, captured_at)
-			 VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
-		)
-		.bind(id, normalized, contentHash)
-		.run();
-	await db
-		.prepare(
-			`UPDATE monitors
-			 SET last_checked_at = CURRENT_TIMESTAMP, last_status = 'changed', last_error = NULL
-			 WHERE id = ?`,
-		)
-		.bind(id)
-		.run();
+	await db.run(
+		`INSERT INTO snapshots (monitor_id, source_url, content, content_hash, captured_at)
+		 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+		[id, monitor.url, normalized, contentHash],
+	);
+	await db.run(
+		`UPDATE monitors
+		 SET last_checked_at = CURRENT_TIMESTAMP, last_status = 'changed', last_error = NULL
+		 WHERE id = ?`,
+		[id],
+	);
 	return { outcome: 'changed', message: 'Alterações detectadas.' };
 }
 
@@ -234,27 +297,22 @@ export type MonitorDiff = {
 };
 
 /**
- * Compara os dois últimos snapshots de uma monitorização.
- * Devolve null quando ainda não há duas versões para comparar.
+ * Compara os dois últimos snapshots da monitorização e do URL ACTUAL.
+ * Nunca compara versões de URLs diferentes.
  */
 export async function getMonitorDiff(
-	db: D1Database,
+	db: Queryable,
+	user: UserRecord,
 	id: string,
 ): Promise<MonitorDiff | null> {
-	const monitor = await getMonitor(db, id);
-	if (!monitor) {
-		throw new ApiError(404, 'Monitorização não encontrada.');
-	}
+	const monitor = await requireOwnedMonitor(db, user, id);
 
-	const { results } = await db
-		.prepare(
-			`SELECT id, monitor_id, content, content_hash, captured_at
-			 FROM snapshots WHERE monitor_id = ?
-			 ORDER BY captured_at DESC, id DESC LIMIT 2`,
-		)
-		.bind(id)
-		.all<SnapshotRow>();
-	const snapshots = results;
+	const snapshots = await db.all<SnapshotRow>(
+		`SELECT id, monitor_id, source_url, content, content_hash, captured_at
+		 FROM snapshots WHERE monitor_id = ? AND source_url = ?
+		 ORDER BY captured_at DESC, id DESC LIMIT 2`,
+		[monitor.id, monitor.url],
+	);
 
 	if (snapshots.length < 2) return null;
 

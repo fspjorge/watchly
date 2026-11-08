@@ -8,7 +8,10 @@
 	"main": "worker/index.ts",
 	"compatibility_date": "2026-11-04",
 	"assets": {
-		"not_found_handling": "single-page-application"
+		"not_found_handling": "single-page-application",
+		// A API responde sempre do Worker, mesmo para pedidos de navegação
+		// (evita que o fallback SPA devolva index.html em rotas /api/*).
+		"run_worker_first": ["/api/*"]
 	},
 	"observability": {
 		"enabled": true
@@ -20,7 +23,7 @@
 			"database_name": "watchly-db",
 			"database_id": "700085c7-eda2-42d4-9172-c128fd98a56a"
 		}
-	]
+	],
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
@@ -35,10 +38,19 @@
 	/**
 	 * Environment Variables
 	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
-	 * Note: Use secrets to store sensitive data.
-	 * https://developers.cloudflare.com/workers/configuration/secrets/
+	 *
+	 * NOTA: preencher os valores reais antes de publicar:
+	 *  - TEAM_DOMAIN: domínio da organização do Cloudflare Access (painel Zero Trust → Access → Applications → "Team domain"), ex.: "https://loja.cloudflareaccess.com";
+	 *  - ACCESS_AUD: Application Audience (AUD) da aplicação Access do Watchly (painel Zero Trust → Access → Applications → Watchly → "Application Audience (AUD)").
+	 *  - DEV_*: apenas para desenvolvimento local, em .dev.vars (não versionado);
+	 *    manter DEV_AUTH=false em qualquer ambiente partilhado ou de produção.
 	 */
-	// "vars": {  "MY_VARIABLE": "production_value" }
+	"vars": {
+		"TEAM_DOMAIN": "https://SUBSTITUIR-ME.cloudflareaccess.com",
+		"ACCESS_AUD": "SUBSTITUIR-ME",
+		"LEGACY_OWNER_EMAIL": "fspjorge@gmail.com",
+		"DEV_AUTH": "false"
+	},
 	/**
 	 * Service Bindings (communicate between multiple Workers)
 	 * https://developers.cloudflare.com/workers/wrangler/configuration/#service-bindings
