@@ -39,15 +39,16 @@
 	 * Environment Variables
 	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
 	 *
-	 * NOTA: preencher os valores reais antes de publicar:
-	 *  - TEAM_DOMAIN: domínio da organização do Cloudflare Access (painel Zero Trust → Access → Applications → "Team domain"), ex.: "https://loja.cloudflareaccess.com";
-	 *  - ACCESS_AUD: Application Audience (AUD) da aplicação Access do Watchly (painel Zero Trust → Access → Applications → Watchly → "Application Audience (AUD)").
+	 * Valores de identidade (Cloudflare Access, Zero Trust):
+	 *  - TEAM_DOMAIN: domínio da organização Access (Zero Trust → Settings);
+	 *  - ACCESS_AUD: Application Audience (AUD) da aplicação Watchly
+	 *    (Zero Trust → Access → Applications → Watchly).
 	 *  - DEV_*: apenas para desenvolvimento local, em .dev.vars (não versionado);
 	 *    manter DEV_AUTH=false em qualquer ambiente partilhado ou de produção.
 	 */
 	"vars": {
-		"TEAM_DOMAIN": "https://SUBSTITUIR-ME.cloudflareaccess.com",
-		"ACCESS_AUD": "SUBSTITUIR-ME",
+		"TEAM_DOMAIN": "https://shrill-bush-5ca5.cloudflareaccess.com",
+		"ACCESS_AUD": "7f0c1ed24cb0e73c83f7ecadb47ca498562c647ef9fde3201f20271107606cef",
 		"LEGACY_OWNER_EMAIL": "fspjorge@gmail.com",
 		"DEV_AUTH": "false"
 	},
