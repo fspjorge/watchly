@@ -31,6 +31,8 @@ function freshDb(): SqliteQueryable {
 	const db = SqliteQueryable.open();
 	applyMigrationFile(db, '0001_initial_schema.sql');
 	applyMigrationFile(db, '0002_multiuser_ownership.sql');
+	applyMigrationFile(db, '0003_scheduled_checks.sql');
+	applyMigrationFile(db, '0004_expired_lease_backoff.sql');
 	return db;
 }
 
@@ -61,6 +63,8 @@ function dbWithLegacyData(): SqliteQueryable {
 	);
 
 	applyMigrationFile(db, '0002_multiuser_ownership.sql');
+	applyMigrationFile(db, '0003_scheduled_checks.sql');
+	applyMigrationFile(db, '0004_expired_lease_backoff.sql');
 	return db;
 }
 
@@ -116,6 +120,45 @@ function call(
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 type MonitorJson = { id: string; name: string; url: string; user_id: string | null };
+
+/** BD com 0001-0003 (agendamento incluído). */
+function db0003(): SqliteQueryable {
+	const db = SqliteQueryable.open();
+	applyMigrationFile(db, '0001_initial_schema.sql');
+	applyMigrationFile(db, '0002_multiuser_ownership.sql');
+	applyMigrationFile(db, '0003_scheduled_checks.sql');
+	applyMigrationFile(db, '0004_expired_lease_backoff.sql');
+	return db;
+}
+
+/** fetch simulado que responde sempre 403 para qualquer URL de conteúdo. */
+function stubForbiddenHtml(idp: TestIdp): void {
+	vi.stubGlobal(
+		'fetch',
+		vi.fn((input: unknown) => {
+			const url =
+				typeof input === 'string'
+					? input
+					: input instanceof Request
+						? input.url
+						: String(input);
+			if (url.endsWith('/cdn-cgi/access/certs')) {
+				return Promise.resolve(
+					new Response(JSON.stringify(idp.jwks), {
+						status: 200,
+						headers: { 'content-type': 'application/json' },
+					}),
+				);
+			}
+			return Promise.resolve(
+				new Response('<html><title>403 Forbidden</title></html>', {
+					status: 403,
+					headers: { 'content-type': 'text/html' },
+				}),
+			);
+		}),
+	);
+}
 
 async function createMonitorViaApi(
 	db: SqliteQueryable,
@@ -646,5 +689,247 @@ describe('Gestão e histórico', () => {
 		expect(deleted.status).toBe(204);
 		expect(db.count('SELECT COUNT(*) AS total FROM monitors WHERE id = ?', [monitorA.id])).toBe(0);
 		expect(db.count('SELECT COUNT(*) AS total FROM snapshots WHERE monitor_id = ?', [monitorA.id])).toBe(0);
+	});
+});
+
+describe('Verificações agendadas — endpoint manual e PATCH (0003)', () => {
+	const claims = () => ({ iss: TEAM, aud: AUD, sub: 'sub-A', email: 'a@example.test' });
+
+	async function setup(stub = 'html'): Promise<{
+		db: SqliteQueryable; env: AuthEnv; idp: TestIdp; monitor: MonitorJson;
+	}> {
+		const db = db0003();
+		const env = authEnv();
+		const idp = await createTestIdp();
+		const c = claims();
+		if (stub === '403') {
+			stubForbiddenHtml(idp);
+		} else {
+			stubWorkerFetch(idp, (url) => `<p>${new URL(url).searchParams.get('v') ?? '0'}</p>`);
+		}
+		const criada = await createMonitorViaApi(db, env, idp, c, {
+			name: 'Mon Sched',
+			url: 'https://conteudo.pt/sched',
+		});
+		return { db, env, idp, monitor: ((await criada.json()) as { monitor: MonitorJson }).monitor };
+	}
+
+	async function schedulingRow(db: SqliteQueryable, id: string) {
+		return db.one<{
+			frequency_minutes: number | null; next_check_at: number | null;
+			lease_expires_at: number | null; lease_token: string | null;
+		}>(
+			'SELECT frequency_minutes, next_check_at, lease_expires_at, lease_token FROM monitors WHERE id = ?',
+			[id],
+		);
+	}
+
+	it('POST /check com frequência 30 min agende a próxima ≈ agora + 1800 s e limpe a reserva', async () => {
+		const { db, env, idp, monitor } = await setup();
+		await call(db, env, idp, claims(), 'PATCH', `/api/monitors/${monitor.id}`, { frequency_minutes: 30 });
+		const antes = Date.now();
+		const resposta = await call(db, env, idp, claims(), 'POST', `/api/monitors/${monitor.id}/check`);
+		expect(resposta.status).toBe(200);
+		const row = await schedulingRow(db, monitor.id);
+		expect(row).not.toBeNull();
+		expect(row && row.frequency_minutes).toBe(30);
+		expect(row && row.lease_token).toBeNull();
+		const esperado = row && row.next_check_at;
+		if (typeof esperado === 'number') {
+			const agora = Date.now();
+			// Entre 'antes' e 'agora' (em ocasiões): conclusão do check.
+			expect(esperado).toBeGreaterThanOrEqual(Math.floor(antes / 1000) + 1800);
+			expect(esperado).toBeLessThanOrEqual(Math.floor(agora / 1000) + 1801);
+		} else {
+			throw new Error('next_check_at não foi agendado');
+		}
+	});
+
+	it('POST /check em monitorização manual mantém next_check_at NULL', async () => {
+		const { db, env, idp, monitor } = await setup();
+		const resposta = await call(db, env, idp, claims(), 'POST', `/api/monitors/${monitor.id}/check`);
+		expect(resposta.status).toBe(200);
+		const row = await schedulingRow(db, monitor.id);
+		expect(row && row.next_check_at).toBeNull();
+		expect(row && row.lease_token).toBeNull();
+	});
+
+	it('POST /check duplicado durante verificação em curso devolve 409; após lease expirar, volta a funcionar', async () => {
+		const { db, env, idp, monitor } = await setup();
+		// Outro executor (cron ou pedido manual antigo) tomou posse agora.
+		db.run('UPDATE monitors SET lease_token = ?, lease_expires_at = ? WHERE id = ?', [
+			'tok-outro', Math.floor(Date.now() / 1000) + 120, monitor.id,
+		]);
+		const bloqueado = await call(db, env, idp, claims(), 'POST', `/api/monitors/${monitor.id}/check`);
+		expect(bloqueado.status).toBe(409);
+		expect((await bloqueado.json()) as { error: string }).toMatchObject({ error: /Verificação em curso/ });
+
+		// A reserva expira (execução interrompida), o utilizador volta ao trabalho.
+		db.run('UPDATE monitors SET lease_expires_at = ? WHERE id = ?', [
+			Math.floor(Date.now() / 1000) - 1, monitor.id,
+		]);
+		const resposta = await call(db, env, idp, claims(), 'POST', `/api/monitors/${monitor.id}/check`);
+		expect(resposta.status).toBe(200);
+	});
+
+	it('PATCH activa frequência e agenda a primeira verificação para já', async () => {
+		const { db, env, idp, monitor } = await setup();
+		const antes = Math.floor(Date.now() / 1000);
+		const patch = await call(db, env, idp, claims(), 'PATCH', `/api/monitors/${monitor.id}`, { frequency_minutes: 60 });
+		expect(patch.status).toBe(200);
+		const row = await schedulingRow(db, monitor.id);
+		expect(row && row.frequency_minutes).toBe(60);
+		const next = row && row.next_check_at;
+		if (typeof next !== 'number') throw new Error('activação não agendou');
+		expect(next).toBeGreaterThanOrEqual(antes); // "imediatamente"
+		expect(next).toBeLessThanOrEqual(Math.floor(Date.now() / 1000));
+	});
+
+	it('PATCH desactiva a frequência (null) e esvazia o agendamento', async () => {
+		const { db, env, idp, monitor } = await setup();
+		await call(db, env, idp, claims(), 'PATCH', `/api/monitors/${monitor.id}`, { frequency_minutes: 15 });
+		const patch = await call(db, env, idp, claims(), 'PATCH', `/api/monitors/${monitor.id}`, { frequency_minutes: null });
+		expect(patch.status).toBe(200);
+		const row = await schedulingRow(db, monitor.id);
+		expect(row && row.frequency_minutes).toBeNull();
+		expect(row && row.next_check_at).toBeNull();
+	});
+
+	it('PATCH com frequência inválida devolve 400', async () => {
+		const { db, env, idp, monitor } = await setup();
+		const patch = await call(db, env, idp, claims(), 'PATCH', `/api/monitors/${monitor.id}`, { frequency_minutes: 7 });
+		expect(patch.status).toBe(400);
+		const row = await schedulingRow(db, monitor.id);
+		expect(row && row.frequency_minutes).toBeNull();
+	});
+
+	it('PATCH que altera o URL reinicia o estado e deixa próxima verificação = agora + frequência', async () => {
+		const { db, env, idp, monitor } = await setup();
+		await call(db, env, idp, claims(), 'PATCH', `/api/monitors/${monitor.id}`, { frequency_minutes: 30 });
+		const antes = Math.floor(Date.now() / 1000);
+		const patch = await call(db, env, idp, claims(), 'PATCH', `/api/monitors/${monitor.id}`, {
+			url: 'https://conteudo.pt/sched?v=2',
+		});
+		expect(patch.status).toBe(200);
+		const row = await schedulingRow(db, monitor.id);
+		expect(row && row.lease_token).toBeNull();
+		const next = row && row.next_check_at;
+		if (typeof next !== 'number') throw new Error('não agendou após alteração de URL');
+		expect(next).toBeGreaterThanOrEqual(antes + 1800); // agora + 30 min
+		const estado = await db.one<{ last_status: string; last_checked_at: string | null }>(
+			'SELECT last_status, last_checked_at FROM monitors WHERE id = ?', [monitor.id],
+		);
+		expect(estado && estado.last_status).toBe('pending');
+	});
+
+	it('PATCH que só muda o nome não re-agenda a próxima verificação', async () => {
+		const { db, env, idp, monitor } = await setup();
+		await call(db, env, idp, claims(), 'PATCH', `/api/monitors/${monitor.id}`, { frequency_minutes: 30 });
+		const antes = await schedulingRow(db, monitor.id);
+		const patch = await call(db, env, idp, claims(), 'PATCH', `/api/monitors/${monitor.id}`, {
+			name: 'Só o nome',
+		});
+		expect(patch.status).toBe(200);
+		const row = await schedulingRow(db, monitor.id);
+		// O agendamento vigente não pode ter sido empurrado pela mudança de nome.
+		expect(row && row.next_check_at).toBe(antes && antes.next_check_at);
+		expect(row && row.frequency_minutes).toBe(30);
+	});
+
+	it('PATCH que altera o URL numa monitorização manual mantém next_check_at NULL', async () => {
+		const { db, env, idp, monitor } = await setup();
+		const patch = await call(db, env, idp, claims(), 'PATCH', `/api/monitors/${monitor.id}`, {
+			url: 'https://conteudo.pt/manual-novo',
+		});
+		expect(patch.status).toBe(200);
+		const row = await schedulingRow(db, monitor.id);
+		expect(row && row.frequency_minutes).toBeNull();
+		expect(row && row.next_check_at).toBeNull();
+		const estado = await db.one<{ last_status: string }>(
+			'SELECT last_status FROM monitors WHERE id = ?', [monitor.id],
+		);
+		expect(estado && estado.last_status).toBe('pending');
+	});
+
+	it('criação continua sem frequência (NULL) e sem agendamento', async () => {
+		const db = db0003();
+		const env = authEnv();
+		const idp = await createTestIdp();
+		const c = claims();
+		stubWorkerFetch(idp, '<p>ok</p>');
+		const resposta = await createMonitorViaApi(db, env, idp, c, { name: 'Nova', url: 'https://conteudo.pt/nova' });
+		expect(resposta.status).toBe(201);
+		const monitor = ((await resposta.json()) as { monitor: MonitorJson }).monitor;
+		const row = await schedulingRow(db, monitor.id);
+		expect(row && row.frequency_minutes).toBeNull();
+		expect(row && row.next_check_at).toBeNull();
+		expect(row && row.lease_token).toBeNull();
+	});
+
+	it.each([null, 15, 30, 60, 360, 720, 1440])(
+		'POST cria monitorização com frequência %s e a configuração persiste ao listar',
+		async (frequency) => {
+			const db = db0003();
+			const env = authEnv();
+			const idp = await createTestIdp();
+			stubWorkerFetch(idp, '<p>ok</p>');
+			const startedAt = Math.floor(Date.now() / 1000);
+			const response = await createMonitorViaApi(db, env, idp, claims(), {
+				name: 'Nova com frequência',
+				url: 'https://conteudo.pt/nova-com-frequencia',
+				frequency_minutes: frequency,
+			});
+
+			expect(response.status).toBe(201);
+			const created = ((await response.json()) as { monitor: MonitorJson }).monitor;
+			const saved = await schedulingRow(db, created.id);
+			expect(saved?.frequency_minutes).toBe(frequency);
+			if (frequency === null) {
+				expect(saved?.next_check_at).toBeNull();
+			} else {
+				expect(saved?.next_check_at).toBeGreaterThanOrEqual(startedAt);
+				expect(saved?.next_check_at).toBeLessThanOrEqual(Math.floor(Date.now() / 1000));
+			}
+
+			// Equivale ao reload do dashboard: GET devolve a frequência persistida.
+			const listed = await call(db, env, idp, claims(), 'GET', '/api/monitors');
+			expect(listed.status).toBe(200);
+			const monitors = (await listed.json() as { monitors: Array<{ id: string; frequency_minutes: number | null }> }).monitors;
+			expect(monitors.find((monitor) => monitor.id === created.id)?.frequency_minutes).toBe(frequency);
+		},
+	);
+
+	it('POST rejeita frequência inválida sem criar monitorização', async () => {
+		const db = db0003();
+		const env = authEnv();
+		const idp = await createTestIdp();
+		stubWorkerFetch(idp, '<p>ok</p>');
+		const response = await createMonitorViaApi(db, env, idp, claims(), {
+			name: 'Frequência inválida',
+			url: 'https://conteudo.pt/invalida',
+			frequency_minutes: 7,
+		});
+
+		expect(response.status).toBe(400);
+		expect(db.count('SELECT COUNT(*) AS total FROM monitors')).toBe(0);
+	});
+
+	it('resposta HTTP 403 conta como tentativa concluída: erro registado E próxima verificação agendada', async () => {
+		const { db, env, idp, monitor } = await setup('403');
+		await call(db, env, idp, claims(), 'PATCH', `/api/monitors/${monitor.id}`, { frequency_minutes: 15 });
+		const resposta = await call(db, env, idp, claims(), 'POST', `/api/monitors/${monitor.id}/check`);
+		// O outcome é erro de recolha, mas a finalização AGENDA a próxima tentativa.
+		const dados = (await resposta.json()) as { outcome: string };
+		expect(dados.outcome).toBe('error');
+		const row = await schedulingRow(db, monitor.id);
+		expect(row && row.frequency_minutes).toBe(15);
+		if (typeof (row && row.next_check_at) !== 'number') {
+			throw new Error('403 não agendou repetição');
+		}
+		expect(row && row.lease_token).toBeNull();
+		const estado = await db.one<{ last_status: string }>(
+			'SELECT last_status FROM monitors WHERE id = ?', [monitor.id],
+		);
+		expect(estado && estado.last_status).toBe('error');
 	});
 });

@@ -92,4 +92,23 @@ describe('extractTextFromHtml', () => {
 		const text = extractTextFromHtml(html);
 		expect(text).toBe('Antes\nDepois');
 	});
+
+	it('processa documentos pequenos, médios e densos sem perder o texto visível', () => {
+		for (const size of [1024, 16 * 1024, 60 * 1024]) {
+			const html = `<main><h1>Início</h1><p>${'a'.repeat(size)}</p><p>Fim</p></main>`;
+			const text = extractTextFromHtml(html);
+			expect(text.startsWith('Início\n')).toBe(true);
+			expect(text.endsWith('\nFim')).toBe(true);
+			expect(text).toContain('a'.repeat(size));
+		}
+	});
+
+	it('ignora páginas com muitos elementos e payloads grandes em elementos não visíveis', () => {
+		const dense = '<span>visível</span>'.repeat(2500);
+		const hidden = `<script>${'<node attr="value">payload</node>'.repeat(1000)}</script>`;
+		const text = extractTextFromHtml(`<body>${hidden}${dense}<p>fim</p></body>`);
+		expect(text).not.toContain('payload');
+		expect(text.match(/visível/g)).toHaveLength(2500);
+		expect(text.endsWith('\nfim')).toBe(true);
+	});
 });

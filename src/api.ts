@@ -12,6 +12,8 @@ export type Monitor = {
 	last_checked_at: string | null;
 	last_status: MonitorStatus;
 	last_error: string | null;
+	frequency_minutes: number | null;
+	next_check_at: number | null;
 };
 
 export type CheckOutcome = 'initial' | 'unchanged' | 'changed' | 'error';
@@ -103,17 +105,21 @@ export async function listMonitors(): Promise<Monitor[]> {
 	return monitors;
 }
 
-export async function addMonitor(name: string, url: string): Promise<Monitor> {
+export async function addMonitor(
+	name: string,
+	url: string,
+	frequency_minutes: number | null = null,
+): Promise<Monitor> {
 	const { monitor } = await request<{ monitor: Monitor }>('/api/monitors', {
 		method: 'POST',
-		body: JSON.stringify({ name, url }),
+		body: JSON.stringify({ name, url, frequency_minutes }),
 	});
 	return monitor;
 }
 
 export async function updateMonitor(
 	id: string,
-	input: { name?: string; url?: string },
+	input: { name?: string; url?: string; frequency_minutes?: number | null },
 ): Promise<Monitor> {
 	const { monitor } = await request<{ monitor: Monitor }>(`/api/monitors/${id}`, {
 		method: 'PATCH',
@@ -136,6 +142,49 @@ export async function checkMonitor(id: string): Promise<{ outcome: CheckOutcome;
 export async function getDiff(id: string): Promise<MonitorDiff> {
 	const { diff } = await request<{ diff: MonitorDiff }>(`/api/monitors/${id}/diff`);
 	return diff;
+}
+
+/* ------------------------------------------------------------------ */
+/* Verificações automáticas                                            */
+/* ------------------------------------------------------------------ */
+
+/** Frequências configuráveis, em minutos. */
+export const FREQUENCY_OPTIONS: readonly number[] = [15, 30, 60, 360, 720, 1440];
+
+/** Opções partilhadas pelos formulários de criação e edição. */
+export const FREQUENCY_SELECT_OPTIONS = [
+	{ value: '', label: 'Apenas manual (sem agendamento)' },
+	{ value: '15', label: 'A cada 15 minutos' },
+	{ value: '30', label: 'A cada 30 minutos' },
+	{ value: '60', label: 'A cada hora' },
+	{ value: '360', label: 'A cada 6 horas' },
+	{ value: '720', label: 'A cada 12 horas' },
+	{ value: '1440', label: 'Uma vez por dia' },
+] as const;
+
+/** Etiquetas pt-PT de frequência e formatação de epochs (segundos UTC). */
+export function frequencyLabel(minutes: number | null): string {
+	if (minutes === null) return 'Apenas manual';
+	switch (minutes) {
+		case 15: return '15 minutos';
+		case 30: return '30 minutos';
+		case 60: return '1 hora';
+		case 360: return '6 horas';
+		case 720: return '12 horas';
+		case 1440: return '24 horas';
+		default: return `${minutes} minutos`;
+	}
+}
+
+/** Formata um epoch unix (segundos UTC) na hora local; null = '—'. */
+export function formatEpoch(seconds: number | null): string {
+	if (seconds === null) return '—';
+	const date = new Date(seconds * 1000);
+	if (Number.isNaN(date.getTime())) return '—';
+	return new Intl.DateTimeFormat('pt-PT', {
+		dateStyle: 'medium',
+		timeStyle: 'short',
+	}).format(date);
 }
 
 export const STATUS_LABELS: Record<MonitorStatus, string> = {

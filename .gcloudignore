@@ -1,0 +1,58 @@
+#!include:.gitignore
+
+# Deny all root entries. Only the two npm manifests and two source directories
+# are reopened below; their contents are denied again before exact files pass.
+/*
+!/package.json
+!/package-lock.json
+!/cloud-run/
+!/worker/
+
+# Deny every direct child of the source directories, then allow only the
+# runtime entry point and its complete, statically inspected import graph.
+/cloud-run/*
+/worker/*
+
+!/cloud-run/server.ts
+!/cloud-run/http.ts
+!/cloud-run/check.ts
+!/cloud-run/ssrf.ts
+!/cloud-run/redirects.internal.ts
+
+!/worker/api.ts
+!/worker/diff.ts
+!/worker/extract.ts
+!/worker/scrape.ts
+!/worker/scheduling.ts
+!/worker/googleCheck.ts
+!/worker/googleQuota.ts
+
+# Explicit defense-in-depth exclusions for repository metadata, development
+# assets, tests, local scripts, docs, migrations, fixtures and credentials.
+/.git/
+/.git/**
+/.superpowers/
+/.superpowers/**
+/cloud-run/fixtures/
+/cloud-run/fixtures/**
+/docs/
+/docs/**
+/src/
+/src/**
+/public/
+/public/**
+/migrations/
+/migrations/**
+/index.html
+/**/*.test.*
+/**/*.spec.*
+/**/*.ps1
+/**/*.md
+/**/*.pem
+/**/*.key
+/**/*.crt
+/**/*.cer
+/**/*.p12
+/**/*.pfx
+/**/*.der
+/**/*.secret

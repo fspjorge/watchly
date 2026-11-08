@@ -9,12 +9,23 @@
  */
 
 const FETCH_TIMEOUT_MS = 15_000;
-const MAX_BODY_BYTES = 2_000_000;
+/** Limite inicial ajustável do corpo descodificado, escolhido para o orçamento Free. */
+export const MAX_BODY_BYTES = 64 * 1024;
 const MAX_REDIRECTS = 5;
 
 export class ScrapeError extends Error {
-	constructor(message: string) {
+	readonly httpStatus?: number;
+	readonly contentLength?: string | null;
+	readonly bodyBytesRead: number;
+
+	constructor(
+		message: string,
+		options: { httpStatus?: number; contentLength?: string | null; bodyBytesRead?: number } = {},
+	) {
 		super(message);
+		this.httpStatus = options.httpStatus;
+		this.contentLength = options.contentLength;
+		this.bodyBytesRead = options.bodyBytesRead ?? 0;
 	}
 }
 
@@ -205,6 +216,8 @@ export type FetchedPage = {
 	status: number;
 	contentType: string;
 	text: string;
+	bytesRead: number;
+	contentLength: string | null;
 };
 
 /**
@@ -220,7 +233,7 @@ export async function fetchPage(rawUrl: string): Promise<FetchedPage> {
 			redirect: 'manual',
 			signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 			headers: {
-				'user-agent': 'Watchly/0.1 (+monitorização de páginas)',
+				'user-agent': 'Watchly/0.1 (+monitorizacao de paginas)',
 				accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5',
 			},
 		});
@@ -245,7 +258,10 @@ export async function fetchPage(rawUrl: string): Promise<FetchedPage> {
 	}
 
 	if (!response.ok) {
-		throw new ScrapeError(`A página devolveu o estado HTTP ${response.status}.`);
+		throw new ScrapeError(`A página devolveu o estado HTTP ${response.status}.`, {
+			httpStatus: response.status,
+			contentLength: response.headers.get('content-length'),
+		});
 	}
 
 	const contentType = response.headers.get('content-type') ?? '';
@@ -254,36 +270,63 @@ export async function fetchPage(rawUrl: string): Promise<FetchedPage> {
 		mediaType !== '' &&
 		!['text/html', 'application/xhtml+xml', 'text/plain'].includes(mediaType)
 	) {
-		throw new ScrapeError(`Tipo de conteúdo não suportado: ${mediaType}.`);
+		throw new ScrapeError(`Tipo de conteúdo não suportado: ${mediaType}.`, {
+			httpStatus: response.status,
+			contentLength: response.headers.get('content-length'),
+		});
 	}
 
-	const text = await readBodyWithLimit(response);
-	return { finalUrl: current, status: response.status, contentType, text };
+	const body = await readBodyWithLimit(response);
+	return {
+		finalUrl: current,
+		status: response.status,
+		contentType,
+		contentLength: response.headers.get('content-length'),
+		...body,
+	};
 }
 
-async function readBodyWithLimit(response: Response): Promise<string> {
+async function readBodyWithLimit(
+	response: Response,
+	maxBodyBytes = MAX_BODY_BYTES,
+): Promise<{ text: string; bytesRead: number }> {
 	if (!response.body) {
-		return '';
+		return { text: '', bytesRead: 0 };
+	}
+	const contentLength = response.headers.get('content-length');
+	if (contentLength !== null && /^\d+$/.test(contentLength) && Number(contentLength) > maxBodyBytes) {
+		await response.body.cancel().catch(() => {});
+		throw bodyTooLargeError(maxBodyBytes, 0, contentLength);
 	}
 
 	const reader = response.body.getReader();
 	const decoder = new TextDecoder('utf-8', { fatal: false, ignoreBOM: false });
 	let total = 0;
-	let text = '';
+	const chunks: string[] = [];
 
 	for (;;) {
 		const { done, value } = await reader.read();
 		if (done) break;
 		total += value.byteLength;
-		if (total > MAX_BODY_BYTES) {
-			reader.cancel().catch(() => {});
-			throw new ScrapeError(
-				`Conteúdo demasiado grande (limite: ${Math.round(MAX_BODY_BYTES / 1000)} kB).`,
-			);
+		if (total > maxBodyBytes) {
+			await reader.cancel().catch(() => {});
+			throw bodyTooLargeError(maxBodyBytes, total, contentLength);
 		}
-		text += decoder.decode(value, { stream: true });
+		chunks.push(decoder.decode(value, { stream: true }));
 	}
-	text += decoder.decode();
+	const finalChunk = decoder.decode();
+	if (finalChunk) chunks.push(finalChunk);
 
-	return text;
+	return { text: chunks.join(''), bytesRead: total };
+}
+
+function bodyTooLargeError(
+	maxBodyBytes: number,
+	bodyBytesRead: number,
+	contentLength: string | null,
+): ScrapeError {
+	return new ScrapeError(
+		`Página demasiado grande: o limite de leitura é ${Math.ceil(maxBodyBytes / 1024)} KiB.`,
+		{ contentLength, bodyBytesRead },
+	);
 }

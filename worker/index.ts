@@ -10,10 +10,16 @@ import {
 } from './api.ts';
 import { AuthError, authenticateUser, type AuthEnv, type UserRecord } from './auth.ts';
 import { D1Queryable } from './db.ts';
+import { runScheduler } from './scheduler.ts';
+import { isFrequencyValid } from './scheduling.ts';
 import type { Queryable } from './db.ts';
+import type { CheckEngineEnv } from './googleCheck.ts';
 
 export const handler = {
 	fetch: handleRequest,
+	scheduled: async (_event, env) => {
+		await runScheduler(new D1Queryable(env.watchly_db), undefined, env);
+	},
 } satisfies ExportedHandler<Env>;
 
 async function handleRequest(request: Request, env: Env): Promise<Response> {
@@ -63,7 +69,7 @@ const idRootRe = /^\/api\/monitors\/([0-9a-fA-F-]{36})$/;
 /** Pipeline da API, testável com qualquer Queryable. */
 export async function serveApi(
 	request: Request,
-	env: AuthEnv,
+	env: AuthEnv & CheckEngineEnv,
 	db: Queryable,
 ): Promise<Response> {
 	try {
@@ -99,7 +105,7 @@ export async function serveApi(
 				const monitor = await createMonitor(
 					db,
 					user,
-					body as { name?: unknown; url?: unknown },
+					body as { name?: unknown; url?: unknown; frequency_minutes?: unknown },
 				);
 				return await json({ monitor }, 201);
 			}
@@ -112,7 +118,7 @@ export async function serveApi(
 			if (idMatch[2] !== 'check') {
 				return await json({ error: 'Recurso não encontrado.' }, 404);
 			}
-			const result = await checkMonitor(db, user, idMatch[1]);
+			const result = await checkMonitor(db, user, idMatch[1], env);
 			return await json(
 				{ outcome: result.outcome, message: result.message },
 				result.outcome === 'error' ? 502 : 200,
@@ -136,12 +142,12 @@ export async function serveApi(
 		const rootMatch = idRootRe.exec(url.pathname);
 		if (rootMatch) {
 			if (request.method === 'PATCH') {
-				const body: unknown = await parseJsonBody(request);
+				const body = await parseJsonBody(request);
 				const monitor = await updateMonitor(
 					db,
 					user,
 					rootMatch[1],
-					body as { name?: unknown; url?: unknown },
+					parseMonitorPatchBody(body),
 				);
 				return await json({ monitor });
 			}
@@ -168,6 +174,25 @@ export async function serveApi(
 		console.error('Erro inesperado na API', error);
 		return await json({ error: 'Erro inesperado no servidor.' }, 500);
 	}
+}
+
+/** Valida os campos do PATCH antes de atravessar a fronteira da API. */
+export function parseMonitorPatchBody(
+	body: Record<string, unknown>,
+): { name?: unknown; url?: unknown; frequency_minutes?: number | null } {
+	const patch: { name?: unknown; url?: unknown; frequency_minutes?: number | null } = {};
+	if (Object.hasOwn(body, 'name')) patch.name = body.name;
+	if (Object.hasOwn(body, 'url')) patch.url = body.url;
+	if (Object.hasOwn(body, 'frequency_minutes')) {
+		if (!isFrequencyValid(body.frequency_minutes)) {
+			throw new ApiError(
+				400,
+				'Frequência inválida. Valores aceites: manual (null), 15, 30, 60, 360, 720 ou 1440 minutos.',
+			);
+		}
+		patch.frequency_minutes = body.frequency_minutes;
+	}
+	return patch;
 }
 
 function publicUser(user: UserRecord): unknown {

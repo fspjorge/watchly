@@ -10,7 +10,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { exportJWK, SignJWT } from 'jose';
 import { vi } from 'vitest';
 
-import type { Queryable } from './db.ts';
+import type { BatchOperation, Queryable } from './db.ts';
 
 /* ------------------------------------------------------------------ */
 /* SQLite in-memory com a interface Queryable                          */
@@ -46,6 +46,20 @@ export class SqliteQueryable implements Queryable {
 	all<T extends Row>(sql: string, params: unknown[] = []): Promise<T[]> {
 		const rows = this.db.prepare(sql).all(...(params as never[])) as T[];
 		return Promise.resolve(rows);
+	}
+
+	batch(operations: BatchOperation[]): Promise<number[]> {
+		this.db.exec('BEGIN IMMEDIATE');
+		try {
+			const changes = operations.map(({ sql, params = [] }) =>
+				Number(this.db.prepare(sql).run(...(params as never[])).changes),
+			);
+			this.db.exec('COMMIT');
+			return Promise.resolve(changes);
+		} catch (error) {
+			this.db.exec('ROLLBACK');
+			return Promise.reject(error);
+		}
 	}
 
 	/** Executa SQL cru (migrações multi-instrução). */

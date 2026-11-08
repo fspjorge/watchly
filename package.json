@@ -8,6 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "test": "vitest run",
+    "cloud-run": "node --experimental-strip-types cloud-run/server.ts",
+    "cloud-run:dev": "node --experimental-strip-types cloud-run/server.ts",
     "preview": "npm run build && vite preview",
     "deploy": "npm run build && wrangler deploy",
     "cf-typegen": "wrangler types"

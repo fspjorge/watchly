@@ -1,4 +1,9 @@
-import { STATUS_LABELS, type Monitor } from '../api.ts';
+import {
+	frequencyLabel,
+	formatEpoch,
+	STATUS_LABELS,
+	type Monitor,
+} from '../api.ts';
 import { EditMonitorForm } from './EditMonitorForm.tsx';
 
 export type FeedbackKind = 'ok' | 'info' | 'error';
@@ -70,9 +75,20 @@ export function MonitorCard({
 			) : (
 				<>
 					<p className="monitor-meta">
+						Frequência: <strong>{frequencyLabel(monitor.frequency_minutes)}</strong>
+					</p>
+					<p className="monitor-meta">
 						Última verificação:{' '}
 						<strong>
 							{monitor.last_checked_at ? formatDate(monitor.last_checked_at) : 'nunca'}
+						</strong>
+					</p>
+					<p className="monitor-meta">
+						Próxima verificação:{' '}
+						<strong>
+							{monitor.next_check_at === null
+								? '— (sem verificação automática)'
+								: formatEpoch(monitor.next_check_at)}
 						</strong>
 					</p>
 

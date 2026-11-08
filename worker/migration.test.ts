@@ -96,3 +96,98 @@ describe('migração 0002_multiuser_ownership', () => {
 		expect(user && user.last_login_at).toBeNull();
 	});
 });
+
+describe('migração 0003_scheduled_checks', () => {
+	function freshDb1002(): ReturnType<typeof SqliteQueryable.open> {
+		const db = SqliteQueryable.open();
+		applyMigrationFile(db, '0001_initial_schema.sql');
+		applyMigrationFile(db, '0002_multiuser_ownership.sql');
+		return db;
+	}
+
+	it('acrescenta colunas de agendamento e lease, todas a NULL por omissão, e o índice parcial', async () => {
+		const db = freshDb1002();
+		db.run(
+			`INSERT INTO monitors (id, name, url, created_at, last_status)
+			 VALUES ('6250a15e-2222-4a10-9e1a-bbbbbbbbbb1', 'Exemplo', 'https://exemplo.pt/', '2026-11-07 10:00:00', 'pending')`,
+		);
+
+		applyMigrationFile(db, '0003_scheduled_checks.sql');
+
+		// Dados existentes intactos e colunas novas a NULL (sem backfill).
+		const monitor = await db.one<Record<string, unknown>>(
+			'SELECT frequency_minutes, next_check_at, lease_expires_at, lease_token FROM monitors',
+		);
+		expect(monitor).toEqual({
+			frequency_minutes: null,
+			next_check_at: null,
+			lease_expires_at: null,
+			lease_token: null,
+		});
+
+		// Cabe ser inserido um monitor com frequência e agendamento.
+		db.run(
+			`INSERT INTO monitors (id, name, url, last_status, frequency_minutes, next_check_at)
+			 VALUES ('6250a15e-2222-4a10-9e1a-bbbbbbbbbb2', 'Automático', 'https://exemplo.pt/x', 'pending', 15, 999)`,
+		);
+		const scheduled = await db.one<{ frequency_minutes: number; next_check_at: number }>(
+			'SELECT frequency_minutes, next_check_at FROM monitors WHERE id = ?',
+			['6250a15e-2222-4a10-9e1a-bbbbbbbbbb2'],
+		);
+		expect(scheduled).toEqual({ frequency_minutes: 15, next_check_at: 999 });
+
+		// Índice parcial criado.
+		expect(
+			db.count(
+				"SELECT COUNT(*) AS total FROM sqlite_master WHERE type = 'index' AND name = 'idx_monitors_due'",
+			),
+		).toBe(1);
+	});
+});
+
+describe('migração 0004_expired_lease_backoff', () => {
+	it('acrescenta o contador de falhas com zero por omissão sem alterar monitores existentes', async () => {
+		const db = SqliteQueryable.open();
+		applyMigrationFile(db, '0001_initial_schema.sql');
+		applyMigrationFile(db, '0002_multiuser_ownership.sql');
+		applyMigrationFile(db, '0003_scheduled_checks.sql');
+		db.run(
+			`INSERT INTO monitors (id, name, url, last_status, frequency_minutes, next_check_at)
+			 VALUES ('6250a15e-4444-4a10-9e1a-444444444444', 'Existente', 'https://exemplo.pt/', 'changed', 15, 900)`,
+		);
+
+		applyMigrationFile(db, '0004_expired_lease_backoff.sql');
+
+		const monitor = await db.one<{ last_status: string; frequency_minutes: number; next_check_at: number; consecutive_lease_failures: number }>(
+			'SELECT last_status, frequency_minutes, next_check_at, consecutive_lease_failures FROM monitors',
+		);
+		expect(monitor).toEqual({
+			last_status: 'changed',
+			frequency_minutes: 15,
+			next_check_at: 900,
+			consecutive_lease_failures: 0,
+		});
+	});
+});
+
+describe('migração 0005_google_daily_usage', () => {
+	it('cria o contador diário UTC sem modificar monitores existentes', async () => {
+		const db = SqliteQueryable.open();
+		for (const migration of [
+			'0001_initial_schema.sql', '0002_multiuser_ownership.sql',
+			'0003_scheduled_checks.sql', '0004_expired_lease_backoff.sql',
+		]) applyMigrationFile(db, migration);
+		db.run(
+			`INSERT INTO monitors (id, name, url, last_status, frequency_minutes, next_check_at)
+			 VALUES ('6250a15e-4444-4a10-9e1a-444444444444', 'Existente', 'https://exemplo.pt/', 'changed', 15, 900)`,
+		);
+
+		applyMigrationFile(db, '0005_google_daily_usage.sql');
+
+		expect(await db.one<{ last_status: string; frequency_minutes: number; next_check_at: number }>(
+			'SELECT last_status, frequency_minutes, next_check_at FROM monitors',
+		)).toEqual({ last_status: 'changed', frequency_minutes: 15, next_check_at: 900 });
+		expect(db.count("SELECT COUNT(*) AS total FROM sqlite_master WHERE type='table' AND name='google_daily_usage'")).toBe(1);
+		expect(db.count('SELECT COUNT(*) AS total FROM google_daily_usage')).toBe(0);
+	});
+});

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-import { addMonitor } from '../api.ts';
+import { addMonitor, FREQUENCY_SELECT_OPTIONS } from '../api.ts';
 
 type Props = {
 	onAdded: (monitorId: string) => void;
@@ -9,6 +9,7 @@ type Props = {
 export function AddMonitorForm({ onAdded }: Props) {
 	const [name, setName] = useState('');
 	const [url, setUrl] = useState('');
+	const [frequency, setFrequency] = useState('');
 	const [error, setError] = useState<string | null>(null);
 	const [submitting, setSubmitting] = useState(false);
 
@@ -17,9 +18,11 @@ export function AddMonitorForm({ onAdded }: Props) {
 		setError(null);
 		setSubmitting(true);
 		try {
-			const monitor = await addMonitor(name, url);
+			const frequencyMinutes = frequency === '' ? null : Number(frequency);
+			const monitor = await addMonitor(name, url, frequencyMinutes);
 			setName('');
 			setUrl('');
+			setFrequency('');
 			onAdded(monitor.id);
 		} catch (caught) {
 			setError(caught instanceof Error ? caught.message : 'Não foi possível guardar.');
@@ -53,6 +56,20 @@ export function AddMonitorForm({ onAdded }: Props) {
 						disabled={submitting}
 						required
 					/>
+				</label>
+				<label className="field">
+					<span>Frequência</span>
+					<select
+						value={frequency}
+						onChange={(e) => setFrequency(e.target.value)}
+						disabled={submitting}
+					>
+						{FREQUENCY_SELECT_OPTIONS.map((option) => (
+							<option key={option.value || 'manual'} value={option.value}>
+								{option.label}
+							</option>
+						))}
+					</select>
 				</label>
 				<button className="btn primary" type="submit" disabled={submitting}>
 					{submitting ? 'A guardar…' : 'Adicionar'}

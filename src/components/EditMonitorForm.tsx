@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-import { updateMonitor, type Monitor } from '../api.ts';
+import { updateMonitor, FREQUENCY_SELECT_OPTIONS, type Monitor } from '../api.ts';
 
 type Props = {
 	monitor: Monitor;
@@ -11,6 +11,9 @@ type Props = {
 export function EditMonitorForm({ monitor, onSaved, onCancel }: Props) {
 	const [name, setName] = useState(monitor.name);
 	const [url, setUrl] = useState(monitor.url);
+	const [frequency, setFrequency] = useState<string>(
+		monitor.frequency_minutes === null ? '' : String(monitor.frequency_minutes),
+	);
 	const [error, setError] = useState<string | null>(null);
 	const [saving, setSaving] = useState(false);
 
@@ -19,9 +22,13 @@ export function EditMonitorForm({ monitor, onSaved, onCancel }: Props) {
 		setError(null);
 		setSaving(true);
 		try {
-			const input: { name?: string; url?: string } = {};
+			const input: { name?: string; url?: string; frequency_minutes?: number | null } = {};
 			if (name !== monitor.name) input.name = name;
 			if (url !== monitor.url) input.url = url;
+			const frequencyValue = frequency === '' ? null : Number(frequency);
+			if (frequencyValue !== monitor.frequency_minutes) {
+				input.frequency_minutes = frequencyValue;
+			}
 			if (Object.keys(input).length === 0) {
 				onCancel();
 				return;
@@ -65,6 +72,20 @@ export function EditMonitorForm({ monitor, onSaved, onCancel }: Props) {
 						disabled={saving}
 						required
 					/>
+				</label>
+				<label className="field">
+					<span>Frequência</span>
+					<select
+						value={frequency}
+						onChange={(e) => setFrequency(e.target.value)}
+						disabled={saving}
+					>
+						{FREQUENCY_SELECT_OPTIONS.map((option) => (
+							<option key={option.value || 'manual'} value={option.value}>
+								{option.label}
+							</option>
+						))}
+					</select>
 				</label>
 				<button className="btn" type="button" onClick={onCancel} disabled={saving}>
 					Cancelar

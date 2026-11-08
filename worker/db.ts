@@ -6,6 +6,8 @@
 
 export type QueryRow = Record<string, unknown>;
 
+export type BatchOperation = { sql: string; params?: unknown[] };
+
 export interface Queryable {
 	/** Executa uma instrução de escrita. */
 	run(sql: string, params?: unknown[]): Promise<void>;
@@ -13,6 +15,8 @@ export interface Queryable {
 	one<T extends QueryRow>(sql: string, params?: unknown[]): Promise<T | null>;
 	/** Devolve todas as linhas. */
 	all<T extends QueryRow>(sql: string, params?: unknown[]): Promise<T[]>;
+	/** Executa operações numa transacção atómica e devolve alterações por operação. */
+	batch(operations: BatchOperation[]): Promise<number[]>;
 }
 
 export class D1Queryable implements Queryable {
@@ -43,5 +47,12 @@ export class D1Queryable implements Queryable {
 			.bind(...params)
 			.all<T>();
 		return results;
+	}
+
+	async batch(operations: BatchOperation[]): Promise<number[]> {
+		const results = await this.db.batch(
+			operations.map(({ sql, params = [] }) => this.db.prepare(sql).bind(...params)),
+		);
+		return results.map((result) => result.meta.changes);
 	}
 }

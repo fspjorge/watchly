@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { fetchPage, ScrapeError, validateMonitorUrl } from './scrape.ts';
+import { fetchPage, MAX_BODY_BYTES, ScrapeError, validateMonitorUrl } from './scrape.ts';
 
 describe('validateMonitorUrl', () => {
 	it('aceita URLs HTTP e HTTPS normalizando-os', () => {
@@ -62,6 +62,40 @@ describe('validateMonitorUrl', () => {
 /* ------------------------------------------------------------------ */
 /* Redirects: validação SSRF com fetch simulado                        */
 /* ------------------------------------------------------------------ */
+
+describe('fetchPage — cabeçalhos do pedido', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	function htmlResponse(): Response {
+		return new Response('<p>ok</p>', {
+			status: 200,
+			headers: { 'content-type': 'text/html' },
+		});
+	}
+
+	it('envia o User-Agent exclusivamente em ASCII (regra RFC 7230 para valores de cabeçalho)', async () => {
+		const captured: HeadersInit[] = [];
+		const mock = vi.fn((_url: unknown, init?: { headers?: HeadersInit }) => {
+			captured.push(init?.headers ?? {});
+			return Promise.resolve(htmlResponse());
+		});
+		vi.stubGlobal('fetch', mock);
+
+		await fetchPage('https://publico.pt/pagina');
+
+		expect(mock).toHaveBeenCalled();
+		for (const headers of captured) {
+			const hdr = new Headers(headers);
+			const userAgent = hdr.get('user-agent');
+			expect(userAgent).toBeTruthy();
+			// Valores de cabeçalho aceitáveis: apenas carácter observável ASCII + espaços.
+			expect(userAgent).toMatch(/^[\x20-\x7E]+$/);
+			expect(userAgent).toContain('Watchly/0.1');
+		}
+	});
+});
 
 describe('fetchPage — validação de destinos de redirect', () => {
 	const ORIGIN = 'https://publico.pt/pagina';
@@ -193,5 +227,89 @@ describe('fetchPage — validação de destinos de redirect', () => {
 			'https://publico.pt/pass-4',
 			'https://publico.pt/pass-5',
 		]);
+	});
+});
+
+describe('fetchPage — limite do corpo', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	function responseWithBody(
+		body: BodyInit | null,
+		headers: HeadersInit = {},
+		status = 200,
+	): Response {
+		return new Response(body, {
+			status,
+			headers: { 'content-type': 'text/html', ...Object.fromEntries(new Headers(headers)) },
+		});
+	}
+
+	function stub(response: Response): void {
+		vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(response)));
+	}
+
+	it('aceita corpo abaixo do limite', async () => {
+		const body = 'x'.repeat(MAX_BODY_BYTES - 1);
+		stub(responseWithBody(body));
+		const page = await fetchPage('https://publico.pt/');
+		expect(page.text).toHaveLength(MAX_BODY_BYTES - 1);
+		expect(page.bytesRead).toBe(MAX_BODY_BYTES - 1);
+	});
+
+	it('aceita corpo exactamente no limite', async () => {
+		const body = 'x'.repeat(MAX_BODY_BYTES);
+		stub(responseWithBody(body));
+		const page = await fetchPage('https://publico.pt/');
+		expect(page.text).toHaveLength(MAX_BODY_BYTES);
+		expect(page.bytesRead).toBe(MAX_BODY_BYTES);
+	});
+
+	it('cancela a leitura e dá erro explícito ao ultrapassar o limite', async () => {
+		let cancelled = false;
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode('x'.repeat(MAX_BODY_BYTES)));
+				controller.enqueue(new TextEncoder().encode('x'));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		stub(responseWithBody(stream));
+
+		await expect(fetchPage('https://publico.pt/')).rejects.toMatchObject({
+			message: `Página demasiado grande: o limite de leitura é ${MAX_BODY_BYTES / 1024} KiB.`,
+			bodyBytesRead: MAX_BODY_BYTES + 1,
+		});
+		expect(cancelled).toBe(true);
+	});
+
+	it('usa Content-Length para rejeitar cedo, sem o tratar como única protecção', async () => {
+		let cancelled = false;
+		const stream = new ReadableStream<Uint8Array>({
+			cancel() {
+				cancelled = true;
+			},
+		});
+		stub(responseWithBody(stream, { 'content-length': String(MAX_BODY_BYTES + 1) }));
+
+		await expect(fetchPage('https://publico.pt/')).rejects.toMatchObject({
+			message: expect.stringMatching(/Página demasiado grande/),
+			contentLength: String(MAX_BODY_BYTES + 1),
+			bodyBytesRead: 0,
+		});
+		expect(cancelled).toBe(true);
+	});
+
+	it('regista HTTP 403 sem consumir o corpo de erro', async () => {
+		stub(responseWithBody('bloqueado', { 'content-length': '9' }, 403));
+		await expect(fetchPage('https://publico.pt/')).rejects.toMatchObject({
+			httpStatus: 403,
+			contentLength: '9',
+			bodyBytesRead: 0,
+			message: 'A página devolveu o estado HTTP 403.',
+		});
 	});
 });
