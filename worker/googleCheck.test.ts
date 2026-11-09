@@ -111,7 +111,7 @@ describe('Cloud Run engine adapter', () => {
 describe('Worker engine integration under lease', () => {
 	function database(): ReturnType<typeof SqliteQueryable.open> {
 		const db = SqliteQueryable.open();
-		for (const migration of ['0001_initial_schema.sql', '0002_multiuser_ownership.sql', '0003_scheduled_checks.sql', '0004_expired_lease_backoff.sql', '0005_google_daily_usage.sql']) {
+		for (const migration of ['0001_initial_schema.sql', '0002_multiuser_ownership.sql', '0003_scheduled_checks.sql', '0004_expired_lease_backoff.sql', '0005_google_daily_usage.sql', '0006_email_notifications.sql']) {
 			applyMigrationFile(db, migration);
 		}
 		db.run('INSERT INTO users (id, auth_subject, email) VALUES (?, ?, ?)', ['u1', 'sub1', 'u1@example.test']);
@@ -119,7 +119,7 @@ describe('Worker engine integration under lease', () => {
 			VALUES (?, ?, ?, ?, 'pending')`, [monitorId, 'Monitor', 'https://example.com/', 'u1']);
 		return db;
 	}
-	const user: UserRecord = { id: 'u1', auth_subject: 'sub1', email: 'u1@example.test', name: null, created_at: '', last_login_at: null };
+	const user: UserRecord = { id: 'u1', auth_subject: 'sub1', email: 'u1@example.test', name: null, created_at: '', last_login_at: null, email_notifications_enabled: 1 };
 
 	it('uses Cloudflare by default and retains its existing persistence path', async () => {
 		const db = database();

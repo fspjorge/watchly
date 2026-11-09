@@ -191,3 +191,26 @@ describe('migração 0005_google_daily_usage', () => {
 		expect(db.count('SELECT COUNT(*) AS total FROM google_daily_usage')).toBe(0);
 	});
 });
+
+describe('migração 0006_email_notifications', () => {
+	it('mantém a preferência desligada por omissão e cria uma outbox vazia sem tocar nos dados existentes', async () => {
+		const db = SqliteQueryable.open();
+		for (const migration of [
+			'0001_initial_schema.sql', '0002_multiuser_ownership.sql',
+			'0003_scheduled_checks.sql', '0004_expired_lease_backoff.sql',
+			'0005_google_daily_usage.sql',
+		]) applyMigrationFile(db, migration);
+		await db.run('INSERT INTO users (id, auth_subject, email) VALUES (?, ?, ?)', ['u1', 'sub1', 'u1@example.test']);
+		await db.run('INSERT INTO monitors (id, name, url, user_id) VALUES (?, ?, ?, ?)', [
+			'6250a15e-5555-4a10-9e1a-555555555555', 'Existente', 'https://exemplo.pt/', 'u1',
+		]);
+
+		applyMigrationFile(db, '0006_email_notifications.sql');
+
+		expect(await db.one<{ email_notifications_enabled: number }>(
+			'SELECT email_notifications_enabled FROM users WHERE id = ?', ['u1'],
+		)).toEqual({ email_notifications_enabled: 0 });
+		expect(db.count('SELECT COUNT(*) AS total FROM email_notification_outbox')).toBe(0);
+		expect(db.count('SELECT COUNT(*) AS total FROM monitors')).toBe(1);
+	});
+});

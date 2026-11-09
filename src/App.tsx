@@ -5,11 +5,13 @@ import {
 	deleteMonitor as deleteMonitorApi,
 	getMe,
 	listMonitors,
+	updateEmailNotificationPreference,
 	type CheckOutcome,
 	type Monitor,
 	type User,
 } from './api.ts';
 import { AddMonitorForm } from './components/AddMonitorForm.tsx';
+import { EmailNotificationSettings } from './components/EmailNotificationSettings.tsx';
 import { DiffView } from './components/DiffView.tsx';
 import { MonitorCard, type MonitorFeedback } from './components/MonitorCard.tsx';
 import './App.css';
@@ -152,6 +154,11 @@ function App() {
 		refresh();
 	};
 
+	const handleEmailPreference = async (enabled: boolean) => {
+		const saved = await updateEmailNotificationPreference(enabled);
+		setUser((current) => current ? { ...current, email_notifications_enabled: saved } : current);
+	};
+
 	if (view.kind === 'diff') {
 		return (
 			<main className="app">
@@ -173,6 +180,13 @@ function App() {
 				<p className="auth-error" role="alert">
 					{loadError}
 				</p>
+			)}
+
+			{user && (
+				<EmailNotificationSettings
+					enabled={user.email_notifications_enabled}
+					onChange={handleEmailPreference}
+				/>
 			)}
 
 			{user && (

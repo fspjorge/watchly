@@ -3,8 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { ApiError } from './api.ts';
 import { D1Queryable } from './db.ts';
 
-const { runSchedulerMock } = vi.hoisted(() => ({ runSchedulerMock: vi.fn() }));
+const { runSchedulerMock, dispatchEmailsMock } = vi.hoisted(() => ({ runSchedulerMock: vi.fn(), dispatchEmailsMock: vi.fn() }));
 vi.mock('./scheduler.ts', () => ({ runScheduler: runSchedulerMock }));
+vi.mock('./emailNotifications.ts', () => ({ dispatchEmailNotifications: dispatchEmailsMock }));
 
 import worker, { parseMonitorPatchBody } from './index.ts';
 
@@ -16,6 +17,7 @@ describe('Worker entry point', () => {
 
 	it('routes scheduled events to the existing scheduler with the Worker D1 binding and env', async () => {
 		runSchedulerMock.mockClear();
+		dispatchEmailsMock.mockClear();
 		const env = { watchly_db: {} as D1Database, CHECK_ENGINE: 'cloudflare' } as Env;
 
 		await worker.scheduled?.({} as ScheduledController, env, {} as ExecutionContext);
@@ -24,6 +26,7 @@ describe('Worker entry point', () => {
 		expect(runSchedulerMock.mock.calls[0][0]).toBeInstanceOf(D1Queryable);
 		expect(runSchedulerMock.mock.calls[0][1]).toBeUndefined();
 		expect(runSchedulerMock.mock.calls[0][2]).toBe(env);
+		expect(dispatchEmailsMock).toHaveBeenCalledTimes(1);
 	});
 });
 

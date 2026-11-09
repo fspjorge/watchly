@@ -93,11 +93,20 @@ export type User = {
 	email: string;
 	name: string | null;
 	created_at: string;
+	email_notifications_enabled: boolean;
 };
 
 export async function getMe(): Promise<User> {
 	const { user } = await request<{ user: User }>('/api/me');
 	return user;
+}
+
+export async function updateEmailNotificationPreference(enabled: boolean): Promise<boolean> {
+	const result = await request<{ email_notifications_enabled: boolean }>('/api/me/preferences', {
+		method: 'PATCH',
+		body: JSON.stringify({ email_notifications_enabled: enabled }),
+	});
+	return result.email_notifications_enabled;
 }
 
 export async function listMonitors(): Promise<Monitor[]> {

@@ -29,6 +29,7 @@ export type UserRecord = {
 	name: string | null;
 	created_at: string;
 	last_login_at: string | null;
+	email_notifications_enabled: number;
 };
 
 export class AuthError extends Error {
@@ -218,7 +219,7 @@ export async function getOrCreateUser(db: Queryable, identity: AuthenticatedUser
 	);
 
 	const user = await db.one<UserRecord>(
-		'SELECT id, auth_subject, email, name, created_at, last_login_at FROM users WHERE auth_subject = ?',
+		'SELECT id, auth_subject, email, name, created_at, last_login_at, email_notifications_enabled FROM users WHERE auth_subject = ?',
 		[identity.subject],
 	);
 	if (!user) {

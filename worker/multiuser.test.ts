@@ -33,6 +33,8 @@ function freshDb(): SqliteQueryable {
 	applyMigrationFile(db, '0002_multiuser_ownership.sql');
 	applyMigrationFile(db, '0003_scheduled_checks.sql');
 	applyMigrationFile(db, '0004_expired_lease_backoff.sql');
+	applyMigrationFile(db, '0005_google_daily_usage.sql');
+	applyMigrationFile(db, '0006_email_notifications.sql');
 	return db;
 }
 
@@ -65,6 +67,8 @@ function dbWithLegacyData(): SqliteQueryable {
 	applyMigrationFile(db, '0002_multiuser_ownership.sql');
 	applyMigrationFile(db, '0003_scheduled_checks.sql');
 	applyMigrationFile(db, '0004_expired_lease_backoff.sql');
+	applyMigrationFile(db, '0005_google_daily_usage.sql');
+	applyMigrationFile(db, '0006_email_notifications.sql');
 	return db;
 }
 
@@ -128,6 +132,8 @@ function db0003(): SqliteQueryable {
 	applyMigrationFile(db, '0002_multiuser_ownership.sql');
 	applyMigrationFile(db, '0003_scheduled_checks.sql');
 	applyMigrationFile(db, '0004_expired_lease_backoff.sql');
+	applyMigrationFile(db, '0005_google_daily_usage.sql');
+	applyMigrationFile(db, '0006_email_notifications.sql');
 	return db;
 }
 
@@ -931,5 +937,29 @@ describe('Verificações agendadas — endpoint manual e PATCH (0003)', () => {
 			'SELECT last_status FROM monitors WHERE id = ?', [monitor.id],
 		);
 		expect(estado && estado.last_status).toBe('error');
+	});
+
+	it('preferência de e-mail é visível e alterável apenas pelo utilizador autenticado', async () => {
+		const db = freshDb();
+		const env = authEnv();
+		const idp = await createTestIdp();
+		const claimsA = { iss: TEAM, aud: AUD, sub: 'email-pref-A', email: 'pref-a@example.test' };
+		const claimsB = { iss: TEAM, aud: AUD, sub: 'email-pref-B', email: 'pref-b@example.test' };
+
+		const first = await call(db, env, idp, claimsA, 'GET', '/api/me');
+		expect((await first.json()).user.email_notifications_enabled).toBe(false);
+		const updated = await call(db, env, idp, claimsA, 'PATCH', '/api/me/preferences', {
+			email_notifications_enabled: true,
+		});
+		expect(updated.status).toBe(200);
+		expect(await updated.json()).toEqual({ email_notifications_enabled: true });
+		const reload = await call(db, env, idp, claimsA, 'GET', '/api/me');
+		expect((await reload.json()).user.email_notifications_enabled).toBe(true);
+		const second = await call(db, env, idp, claimsB, 'GET', '/api/me');
+		expect((await second.json()).user.email_notifications_enabled).toBe(false);
+		const invalid = await call(db, env, idp, claimsA, 'PATCH', '/api/me/preferences', {
+			email_notifications_enabled: 'false',
+		});
+		expect(invalid.status).toBe(400);
 	});
 });

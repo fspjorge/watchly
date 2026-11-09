@@ -11,6 +11,7 @@ import {
 import { AuthError, authenticateUser, type AuthEnv, type UserRecord } from './auth.ts';
 import { D1Queryable } from './db.ts';
 import { runScheduler } from './scheduler.ts';
+import { dispatchEmailNotifications } from './emailNotifications.ts';
 import { isFrequencyValid } from './scheduling.ts';
 import type { Queryable } from './db.ts';
 import type { CheckEngineEnv } from './googleCheck.ts';
@@ -18,7 +19,14 @@ import type { CheckEngineEnv } from './googleCheck.ts';
 export const handler = {
 	fetch: handleRequest,
 	scheduled: async (_event, env) => {
-		await runScheduler(new D1Queryable(env.watchly_db), undefined, env);
+		const db = new D1Queryable(env.watchly_db);
+		try {
+			await runScheduler(db, undefined, env);
+		} finally {
+			// O dispatcher é limitado e isolado: uma falha de e-mail não interfere
+			// com leases nem com o resultado do scheduler.
+			await dispatchEmailNotifications(db, env);
+		}
 	},
 } satisfies ExportedHandler<Env>;
 
@@ -91,6 +99,21 @@ export async function serveApi(
 
 		if (url.pathname === '/api/me' && request.method === 'GET') {
 			return await json({ user: publicUser(user) });
+		}
+
+		if (url.pathname === '/api/me/preferences' && request.method === 'PATCH') {
+			const body = await parseJsonBody(request);
+			if (typeof body.email_notifications_enabled !== 'boolean') {
+				throw new ApiError(400, 'email_notifications_enabled deve ser true ou false.');
+			}
+			await db.run(
+				'UPDATE users SET email_notifications_enabled = ? WHERE id = ?',
+				[body.email_notifications_enabled ? 1 : 0, user.id],
+			);
+			const updated = await db.one<{ email_notifications_enabled: number }>(
+				'SELECT email_notifications_enabled FROM users WHERE id = ?', [user.id],
+			);
+			return await json({ email_notifications_enabled: updated?.email_notifications_enabled === 1 });
 		}
 
 		if (url.pathname === '/api/monitors') {
@@ -201,6 +224,7 @@ function publicUser(user: UserRecord): unknown {
 		email: user.email,
 		name: user.name,
 		created_at: user.created_at,
+		email_notifications_enabled: user.email_notifications_enabled === 1,
 	};
 }
 

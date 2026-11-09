@@ -66,6 +66,8 @@ beforeEach(() => {
 	applyMigrationFile(db, '0002_multiuser_ownership.sql');
 	applyMigrationFile(db, '0003_scheduled_checks.sql');
 	applyMigrationFile(db, '0004_expired_lease_backoff.sql');
+	applyMigrationFile(db, '0005_google_daily_usage.sql');
+	applyMigrationFile(db, '0006_email_notifications.sql');
 });
 
 afterEach(() => {

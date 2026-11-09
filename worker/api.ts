@@ -307,6 +307,7 @@ export type PersistCheckInput = {
 	status: MonitorStatus;
 	lastError?: string | null;
 	snapshot?: { sourceUrl: string; content: string; contentHash: string };
+	notification?: { id: string; appUrl?: string; fromEmail?: string };
 };
 
 /** Persiste o resultado apenas se o lease continuar válido; D1 batch torna
@@ -340,6 +341,31 @@ export async function persistCheckResults(db: Queryable, input: PersistCheckInpu
 			],
 		});
 	}
+	if (input.snapshot && input.notification) {
+		operations.push({
+			sql: `INSERT OR IGNORE INTO email_notification_outbox
+				(id, monitor_id, user_id, snapshot_id, recipient_email, monitor_name,
+				 snapshot_captured_at, app_url, from_email)
+				SELECT ?, m.id, m.user_id, s.id, u.email, m.name, s.captured_at, ?, ?
+				FROM monitors m
+				JOIN users u ON u.id = m.user_id
+				JOIN snapshots s ON s.id = (
+					SELECT id FROM snapshots WHERE monitor_id = m.id ORDER BY id DESC LIMIT 1
+				)
+				WHERE m.id = ? AND m.url = ? AND m.lease_token = ? AND
+					m.lease_expires_at > COALESCE(?, (julianday('now') - 2440587.5) * 86400)
+				  AND u.email_notifications_enabled = 1`,
+			params: [
+				input.notification.id,
+				input.notification.appUrl ?? null,
+				input.notification.fromEmail ?? null,
+				input.id,
+				input.expectedUrl,
+				input.leaseToken,
+				input.leaseNow ?? null,
+			],
+		});
+	}
 	operations.push({
 		sql: `UPDATE monitors
 			SET last_checked_at = strftime('%Y-%m-%d %H:%M:%f', 'now'),
@@ -355,7 +381,8 @@ export async function persistCheckResults(db: Queryable, input: PersistCheckInpu
 		],
 	});
 	const changes = await db.batch(operations);
-	return changes.every((count) => count === 1);
+	const requiredChanges = [changes[0], ...(input.snapshot ? [changes[1]] : []), changes.at(-1)];
+	return requiredChanges.every((count) => count === 1);
 }
 
 export class LeaseLostError extends Error {
@@ -445,6 +472,9 @@ export async function performCheck(
 	const persisted = await persistCheckResults(db, {
 		id, expectedUrl: monitor.url, leaseToken, status: 'changed',
 		snapshot: { sourceUrl: monitor.url, content: normalized, contentHash },
+		notification: {
+			id: crypto.randomUUID(),
+		},
 	});
 	if (!persisted) throw new LeaseLostError();
 	return { outcome: 'changed', message: 'Alterações detectadas.' };
