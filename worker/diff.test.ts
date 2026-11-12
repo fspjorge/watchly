@@ -122,6 +122,29 @@ describe('diffLines', () => {
 		]);
 	});
 
+	it('does not leak unrelated lines from a grouped change chunk', () => {
+		const chunks = diffLines(
+			[
+				'Benfica: notícia antiga sobre Prestianni',
+				'Ricardo Horta: Seleção vai entrar sempre para ganhar',
+				'Samora Correia negoceia venda da SAD',
+			],
+			[
+				'Benfica: notícia nova sobre Prestianni',
+				'Nazinho recorda saída do Sporting',
+				'Sporting: Mauro Couto volta a ser premiado',
+			],
+		);
+
+		// diffLines groups consecutive removals/additions. The keyword may match
+		// one line inside that chunk, but must not expose its unrelated neighbors.
+		expect(chunks).toHaveLength(2);
+		expect(filterDiffByKeywords(chunks, ['benfica'])).toEqual([
+			{ type: 'removed', lines: ['Benfica: notícia antiga sobre Prestianni'] },
+			{ type: 'added', lines: ['Benfica: notícia nova sobre Prestianni'] },
+		]);
+	});
+
 	it('preserves all changes when no keywords are configured', () => {
 		const chunks = diffLines(['old'], ['new']);
 		expect(filterDiffByKeywords(chunks, [])).toEqual(chunks);

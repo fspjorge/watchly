@@ -28,19 +28,12 @@ export function diffMatchesKeywords(chunks: readonly DiffChunk[], keywords: read
 	return false;
 }
 
-/** Mantém apenas alterações que correspondem a alguma keyword, com contexto. */
+/** Mantém apenas as linhas alteradas que correspondem a alguma keyword. */
 export function filterDiffByKeywords(
 	chunks: readonly DiffChunk[],
 	keywords: readonly string[],
 ): DiffChunk[] {
 	if (keywords.length === 0) return chunks.map((chunk) => ({ ...chunk, lines: [...chunk.lines] }));
-
-	const selectedChanges = new Set<number>();
-	for (let index = 0; index < chunks.length; index++) {
-		const chunk = chunks[index];
-		if (chunk.type === 'unchanged') continue;
-		if (chunkMatchesKeywords(chunk.lines.join('\n'), keywords)) selectedChanges.add(index);
-	}
 
 	const filtered: DiffChunk[] = [];
 	const push = (type: DiffChunkType, line: string) => {
@@ -48,12 +41,12 @@ export function filterDiffByKeywords(
 		if (last?.type === type) last.lines.push(line);
 		else filtered.push({ type, lines: [line] });
 	};
-	chunks.forEach((chunk, index) => {
-		if (selectedChanges.has(index)) {
-			for (const line of chunk.lines) push(chunk.type, line);
-			return;
+	for (const chunk of chunks) {
+		if (chunk.type === 'unchanged') continue;
+		for (const line of chunk.lines) {
+			if (chunkMatchesKeywords(line, keywords)) push(chunk.type, line);
 		}
-	});
+	}
 	return filtered;
 }
 
