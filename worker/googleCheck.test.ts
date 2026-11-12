@@ -111,7 +111,7 @@ describe('Cloud Run engine adapter', () => {
 describe('Worker engine integration under lease', () => {
 	function database(): ReturnType<typeof SqliteQueryable.open> {
 		const db = SqliteQueryable.open();
-		for (const migration of ['0001_initial_schema.sql', '0002_multiuser_ownership.sql', '0003_scheduled_checks.sql', '0004_expired_lease_backoff.sql', '0005_google_daily_usage.sql', '0006_email_notifications.sql']) {
+		for (const migration of ['0001_initial_schema.sql', '0002_multiuser_ownership.sql', '0003_scheduled_checks.sql', '0004_expired_lease_backoff.sql', '0005_google_daily_usage.sql', '0006_email_notifications.sql', '0007_brevo_notification_events.sql', '0008_monitor_keywords.sql']) {
 			applyMigrationFile(db, migration);
 		}
 		db.run('INSERT INTO users (id, auth_subject, email) VALUES (?, ?, ?)', ['u1', 'sub1', 'u1@example.test']);

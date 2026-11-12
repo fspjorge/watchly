@@ -68,6 +68,8 @@ beforeEach(() => {
 	applyMigrationFile(db, '0004_expired_lease_backoff.sql');
 	applyMigrationFile(db, '0005_google_daily_usage.sql');
 	applyMigrationFile(db, '0006_email_notifications.sql');
+	applyMigrationFile(db, '0007_brevo_notification_events.sql');
+	applyMigrationFile(db, '0008_monitor_keywords.sql');
 });
 
 afterEach(() => {

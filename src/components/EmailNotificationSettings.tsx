@@ -23,7 +23,7 @@ export function EmailNotificationSettings({ enabled, onChange }: Props) {
 	return (
 		<section className="panel card email-settings" id="settings">
 			<h2>Notificações por e-mail</h2>
-			<p className="panel-hint">Recebe uma mensagem quando uma verificação detecta alterações.</p>
+			<p className="panel-hint">Recebe uma mensagem quando uma verificação detecta alterações ou inicia um novo incidente de erro.</p>
 			<label className="email-settings-toggle">
 				<input
 					type="checkbox"
@@ -31,7 +31,7 @@ export function EmailNotificationSettings({ enabled, onChange }: Props) {
 					disabled={busy}
 					onChange={(event) => void handleChange(event.target.checked)}
 				/>
-				<span>Enviar-me notificações de alterações</span>
+				<span>Enviar-me notificações de alterações e erros</span>
 			</label>
 			{error && <p className="form-error" role="alert">{error}</p>}
 		</section>

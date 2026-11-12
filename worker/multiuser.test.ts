@@ -35,6 +35,8 @@ function freshDb(): SqliteQueryable {
 	applyMigrationFile(db, '0004_expired_lease_backoff.sql');
 	applyMigrationFile(db, '0005_google_daily_usage.sql');
 	applyMigrationFile(db, '0006_email_notifications.sql');
+	applyMigrationFile(db, '0007_brevo_notification_events.sql');
+	applyMigrationFile(db, '0008_monitor_keywords.sql');
 	return db;
 }
 
@@ -69,6 +71,8 @@ function dbWithLegacyData(): SqliteQueryable {
 	applyMigrationFile(db, '0004_expired_lease_backoff.sql');
 	applyMigrationFile(db, '0005_google_daily_usage.sql');
 	applyMigrationFile(db, '0006_email_notifications.sql');
+	applyMigrationFile(db, '0007_brevo_notification_events.sql');
+	applyMigrationFile(db, '0008_monitor_keywords.sql');
 	return db;
 }
 
@@ -134,6 +138,8 @@ function db0003(): SqliteQueryable {
 	applyMigrationFile(db, '0004_expired_lease_backoff.sql');
 	applyMigrationFile(db, '0005_google_daily_usage.sql');
 	applyMigrationFile(db, '0006_email_notifications.sql');
+	applyMigrationFile(db, '0007_brevo_notification_events.sql');
+	applyMigrationFile(db, '0008_monitor_keywords.sql');
 	return db;
 }
 

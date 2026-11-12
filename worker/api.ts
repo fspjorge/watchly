@@ -307,7 +307,22 @@ export type PersistCheckInput = {
 	status: MonitorStatus;
 	lastError?: string | null;
 	snapshot?: { sourceUrl: string; content: string; contentHash: string };
-	notification?: { id: string; appUrl?: string; fromEmail?: string };
+	notification?: {
+		id: string;
+		appUrl?: string;
+		senderEmail?: string;
+		senderName?: string;
+		previousSnapshotId?: number | null;
+	};
+	errorNotification?: {
+		id: string;
+		sourceUrl: string;
+		httpStatus?: number;
+		description: string;
+		appUrl?: string;
+		senderEmail?: string;
+		senderName?: string;
+	};
 };
 
 /** Persiste o resultado apenas se o lease continuar válido; D1 batch torna
@@ -344,9 +359,11 @@ export async function persistCheckResults(db: Queryable, input: PersistCheckInpu
 	if (input.snapshot && input.notification) {
 		operations.push({
 			sql: `INSERT OR IGNORE INTO email_notification_outbox
-				(id, monitor_id, user_id, snapshot_id, recipient_email, monitor_name,
-				 snapshot_captured_at, app_url, from_email)
-				SELECT ?, m.id, m.user_id, s.id, u.email, m.name, s.captured_at, ?, ?
+				(id, event_key, notification_type, monitor_id, user_id, snapshot_id,
+				 previous_snapshot_id, source_url, recipient_email, monitor_name,
+				 snapshot_captured_at, app_url, from_email, from_name)
+				SELECT ?, ?, 'change', m.id, m.user_id, s.id, ?, m.url, u.email, m.name,
+				       s.captured_at, ?, ?, ?
 				FROM monitors m
 				JOIN users u ON u.id = m.user_id
 				JOIN snapshots s ON s.id = (
@@ -357,8 +374,38 @@ export async function persistCheckResults(db: Queryable, input: PersistCheckInpu
 				  AND u.email_notifications_enabled = 1`,
 			params: [
 				input.notification.id,
+				input.notification.id,
+				input.notification.previousSnapshotId ?? null,
 				input.notification.appUrl ?? null,
-				input.notification.fromEmail ?? null,
+				input.notification.senderEmail ?? null,
+				input.notification.senderName ?? null,
+				input.id,
+				input.expectedUrl,
+				input.leaseToken,
+				input.leaseNow ?? null,
+			],
+		});
+	}
+	if (input.errorNotification) {
+		operations.push({
+			sql: `INSERT OR IGNORE INTO email_notification_outbox
+				(id, event_key, notification_type, monitor_id, user_id, snapshot_id,
+				 source_url, recipient_email, monitor_name, snapshot_captured_at,
+				 http_status, error_description, app_url, from_email, from_name)
+				SELECT ?, ?, 'error', m.id, m.user_id, NULL, m.url, u.email, m.name,
+				       strftime('%Y-%m-%d %H:%M:%f', 'now'), ?, ?, ?, ?, ?
+			FROM monitors m JOIN users u ON u.id = m.user_id
+			WHERE m.id = ? AND m.url = ? AND m.lease_token = ?
+			  AND m.lease_expires_at > COALESCE(?, (julianday('now') - 2440587.5) * 86400)
+			  AND m.last_status != 'error' AND u.email_notifications_enabled = 1`,
+			params: [
+				input.errorNotification.id,
+				input.errorNotification.id,
+				input.errorNotification.httpStatus ?? null,
+				input.errorNotification.description.slice(0, 1000),
+				input.errorNotification.appUrl ?? null,
+				input.errorNotification.senderEmail ?? null,
+				input.errorNotification.senderName ?? null,
 				input.id,
 				input.expectedUrl,
 				input.leaseToken,
@@ -443,6 +490,15 @@ export async function performCheck(
 			leaseToken,
 			status: 'error',
 			lastError: message,
+			errorNotification: {
+				id: crypto.randomUUID(),
+				sourceUrl: monitor.url,
+				httpStatus: error instanceof ScrapeError ? error.httpStatus : undefined,
+				description: message,
+				appUrl: env.WATCHLY_APP_URL,
+				senderEmail: env.BREVO_SENDER_EMAIL,
+				senderName: env.BREVO_SENDER_NAME,
+			},
 		});
 		if (!persisted) throw new LeaseLostError();
 		return { outcome: 'error', message };
@@ -474,6 +530,10 @@ export async function performCheck(
 		snapshot: { sourceUrl: monitor.url, content: normalized, contentHash },
 		notification: {
 			id: crypto.randomUUID(),
+			previousSnapshotId: latest.id,
+			appUrl: env.WATCHLY_APP_URL,
+			senderEmail: env.BREVO_SENDER_EMAIL,
+			senderName: env.BREVO_SENDER_NAME,
 		},
 	});
 	if (!persisted) throw new LeaseLostError();
