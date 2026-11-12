@@ -2,7 +2,7 @@
  * Cliente da API REST do Worker.
  */
 
-export type MonitorStatus = 'pending' | 'unchanged' | 'changed' | 'error';
+export type MonitorStatus = 'pending' | 'unchanged' | 'changed' | 'filtered' | 'error';
 
 export type Monitor = {
 	id: string;
@@ -14,9 +14,10 @@ export type Monitor = {
 	last_error: string | null;
 	frequency_minutes: number | null;
 	next_check_at: number | null;
+	keywords: string;
 };
 
-export type CheckOutcome = 'initial' | 'unchanged' | 'changed' | 'error';
+export type CheckOutcome = 'initial' | 'unchanged' | 'changed' | 'filtered' | 'error';
 
 export type DiffChunk = {
 	type: 'unchanged' | 'removed' | 'added';
@@ -34,6 +35,9 @@ export type MonitorDiff = {
 	after: { id: number; captured_at: string };
 	addedCount: number;
 	removedCount: number;
+	keywords: string[];
+	filteredByKeywords: boolean;
+	hasMatchingDiff: boolean;
 	chunks: DiffChunk[];
 };
 
@@ -74,6 +78,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		const message =
 			typeof body === 'object' && body !== null && 'error' in body
 				? String((body as { error: unknown }).error)
+				: typeof body === 'object' && body !== null && 'message' in body && typeof (body as { message: unknown }).message === 'string'
+					? (body as { message: string }).message
 				: `O servidor respondeu com o estado ${response.status}.`;
 		if (response.status === 401 || response.status === 403) {
 			// Sessão terminou/expirada: sinaliza globalmente para que a
@@ -118,17 +124,18 @@ export async function addMonitor(
 	name: string,
 	url: string,
 	frequency_minutes: number | null = null,
+	keywords = '',
 ): Promise<Monitor> {
 	const { monitor } = await request<{ monitor: Monitor }>('/api/monitors', {
 		method: 'POST',
-		body: JSON.stringify({ name, url, frequency_minutes }),
+		body: JSON.stringify({ name, url, frequency_minutes, keywords }),
 	});
 	return monitor;
 }
 
 export async function updateMonitor(
 	id: string,
-	input: { name?: string; url?: string; frequency_minutes?: number | null },
+	input: { name?: string; url?: string; frequency_minutes?: number | null; keywords?: string },
 ): Promise<Monitor> {
 	const { monitor } = await request<{ monitor: Monitor }>(`/api/monitors/${id}`, {
 		method: 'PATCH',
@@ -200,6 +207,7 @@ export const STATUS_LABELS: Record<MonitorStatus, string> = {
 	pending: 'Por verificar',
 	unchanged: 'Sem alterações',
 	changed: 'Alterações detectadas',
+	filtered: 'Alteração filtrada por keywords',
 	error: 'Erro',
 };
 

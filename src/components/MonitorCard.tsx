@@ -29,6 +29,7 @@ const STATUS_CLASSES: Record<Monitor['last_status'], string> = {
 	pending: 'pending',
 	unchanged: 'ok',
 	changed: 'alert',
+	filtered: 'pending',
 	error: 'error',
 };
 
@@ -77,6 +78,11 @@ export function MonitorCard({
 					<p className="monitor-meta">
 						Frequência: <strong>{frequencyLabel(monitor.frequency_minutes)}</strong>
 					</p>
+					{monitor.keywords && (
+						<p className="monitor-meta">
+							Keywords: <strong>{monitor.keywords.split('\n').join(', ')}</strong>
+						</p>
+					)}
 					<p className="monitor-meta">
 						Última verificação:{' '}
 						<strong>

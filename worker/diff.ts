@@ -9,6 +9,54 @@ export type DiffChunk = {
 	lines: string[];
 };
 
+function normalizeKeywordText(value: string): string {
+	return value.normalize('NFKC').toLocaleLowerCase('pt-PT');
+}
+
+function chunkMatchesKeywords(text: string, keywords: readonly string[]): boolean {
+	const normalizedText = normalizeKeywordText(text);
+	return keywords.some((keyword) => normalizedText.includes(normalizeKeywordText(keyword)));
+}
+
+/** Só considera linhas adicionadas/removidas; texto inalterado não dispara o filtro. */
+export function diffMatchesKeywords(chunks: readonly DiffChunk[], keywords: readonly string[]): boolean {
+	if (keywords.length === 0) return true;
+	for (const chunk of chunks) {
+		if (chunk.type === 'unchanged') continue;
+		if (chunkMatchesKeywords(chunk.lines.join('\n'), keywords)) return true;
+	}
+	return false;
+}
+
+/** Mantém apenas alterações que correspondem a alguma keyword, com contexto. */
+export function filterDiffByKeywords(
+	chunks: readonly DiffChunk[],
+	keywords: readonly string[],
+): DiffChunk[] {
+	if (keywords.length === 0) return chunks.map((chunk) => ({ ...chunk, lines: [...chunk.lines] }));
+
+	const selectedChanges = new Set<number>();
+	for (let index = 0; index < chunks.length; index++) {
+		const chunk = chunks[index];
+		if (chunk.type === 'unchanged') continue;
+		if (chunkMatchesKeywords(chunk.lines.join('\n'), keywords)) selectedChanges.add(index);
+	}
+
+	const filtered: DiffChunk[] = [];
+	const push = (type: DiffChunkType, line: string) => {
+		const last = filtered.at(-1);
+		if (last?.type === type) last.lines.push(line);
+		else filtered.push({ type, lines: [line] });
+	};
+	chunks.forEach((chunk, index) => {
+		if (selectedChanges.has(index)) {
+			for (const line of chunk.lines) push(chunk.type, line);
+			return;
+		}
+	});
+	return filtered;
+}
+
 type Op = { type: DiffChunkType; line: string };
 
 /** Número máximo de células da matriz LCS antes de recorrer a "substituição total". */

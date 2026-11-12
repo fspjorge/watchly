@@ -36,6 +36,13 @@ describe('parseMonitorPatchBody', () => {
 		expect(parseMonitorPatchBody({ frequency_minutes: null })).toEqual({ frequency_minutes: null });
 	});
 
+	it('preserva keywords ausentes e aceita a string escolhida no PATCH', () => {
+		expect(parseMonitorPatchBody({ name: 'Novo nome' })).not.toHaveProperty('keywords');
+		expect(parseMonitorPatchBody({ keywords: 'Preço\nDisponível' })).toEqual({
+			keywords: 'Preço\nDisponível',
+		});
+	});
+
 	it.each([15, 30, 60, 360, 720, 1440])('aceita frequência válida %s', (frequency) => {
 		expect(parseMonitorPatchBody({ frequency_minutes: frequency })).toEqual({
 			frequency_minutes: frequency,

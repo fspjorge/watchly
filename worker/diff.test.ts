@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { diffLines } from './diff.ts';
+import { diffLines, diffMatchesKeywords, filterDiffByKeywords } from './diff.ts';
 
 const ofType = (chunks: ReturnType<typeof diffLines>, type: string) =>
 	chunks.filter((chunk) => chunk.type === type).flatMap((chunk) => chunk.lines);
@@ -96,5 +96,35 @@ describe('diffLines', () => {
 
 	it('trata as duas versões vazias como nenhuma diferença', () => {
 		expect(diffLines([], [])).toEqual([]);
+	});
+
+	it('matches keyword in removed or added text without case sensitivity', () => {
+		const chunks = diffLines(['Preço: 10 euros'], ['Preço: 12 euros']);
+		expect(diffMatchesKeywords(chunks, ['preço'])).toBe(true);
+		expect(diffMatchesKeywords(chunks, ['12 EUROS'])).toBe(true);
+		expect(diffMatchesKeywords(chunks, ['stock'])).toBe(false);
+	});
+
+	it('does not treat an unchanged adjacent keyword as a match', () => {
+		const chunks = diffLines(['Preço', '10 euros'], ['Preço', '12 euros']);
+		expect(diffMatchesKeywords(chunks, ['preço'])).toBe(false);
+	});
+
+	it('filters displayed changes to lines that contain a keyword', () => {
+		const chunks = diffLines(
+			['Produto', 'Preço: 10 euros', 'Detalhes', 'Stock disponível', 'Condições', 'Rodapé antigo'],
+			['Produto', 'Preço: 12 euros', 'Detalhes', 'Stock indisponível', 'Condições', 'Rodapé novo'],
+		);
+		const filtered = filterDiffByKeywords(chunks, ['preço']);
+		expect(filtered).toEqual([
+			{ type: 'removed', lines: ['Preço: 10 euros'] },
+			{ type: 'added', lines: ['Preço: 12 euros'] },
+		]);
+	});
+
+	it('preserves all changes when no keywords are configured', () => {
+		const chunks = diffLines(['old'], ['new']);
+		expect(filterDiffByKeywords(chunks, [])).toEqual(chunks);
+		expect(diffMatchesKeywords(chunks, [])).toBe(true);
 	});
 });

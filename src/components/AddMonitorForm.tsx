@@ -10,6 +10,7 @@ export function AddMonitorForm({ onAdded }: Props) {
 	const [name, setName] = useState('');
 	const [url, setUrl] = useState('');
 	const [frequency, setFrequency] = useState('');
+	const [keywords, setKeywords] = useState('');
 	const [error, setError] = useState<string | null>(null);
 	const [submitting, setSubmitting] = useState(false);
 
@@ -19,10 +20,11 @@ export function AddMonitorForm({ onAdded }: Props) {
 		setSubmitting(true);
 		try {
 			const frequencyMinutes = frequency === '' ? null : Number(frequency);
-			const monitor = await addMonitor(name, url, frequencyMinutes);
+			const monitor = await addMonitor(name, url, frequencyMinutes, keywords);
 			setName('');
 			setUrl('');
 			setFrequency('');
+			setKeywords('');
 			onAdded(monitor.id);
 		} catch (caught) {
 			setError(caught instanceof Error ? caught.message : 'Não foi possível guardar.');
@@ -70,6 +72,17 @@ export function AddMonitorForm({ onAdded }: Props) {
 							</option>
 						))}
 					</select>
+				</label>
+				<label className="field">
+					<span>Keywords (opcional)</span>
+					<textarea
+						value={keywords}
+						onChange={(e) => setKeywords(e.target.value)}
+						disabled={submitting}
+						maxLength={1000}
+						rows={2}
+						placeholder={'Preço\nDisponível'}
+					/>
 				</label>
 				<button className="btn primary" type="submit" disabled={submitting}>
 					{submitting ? 'A guardar…' : 'Adicionar'}

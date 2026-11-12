@@ -56,17 +56,26 @@ export function DiffView({ monitorId, onBack }: Props) {
 							Versão anterior: versão #{diff.before.id} ({formatSnapshotDate(diff.before.captured_at)})
 							→ versão mais recente: #{diff.after.id} ({formatSnapshotDate(diff.after.captured_at)})
 						</p>
+						{diff.filteredByKeywords && (
+							<p className="diff-snapshots">
+								Diferenças filtradas pelas keywords: {diff.keywords.join(', ')}.
+							</p>
+						)}
 					</header>
 
-					<div className="diff-chunks" role="table" aria-label="Comparações de linhas">
-						{diff.chunks.map((chunk, index) => (
-							<div key={index} className={`diff-chunk ${chunk.type}`}>
-								{chunk.lines.map((line, lineIndex) => (
-									<Row key={lineIndex} line={line} type={chunk.type} />
-								))}
-							</div>
-						))}
-					</div>
+					{diff.filteredByKeywords && !diff.hasMatchingDiff ? (
+						<p className="diff-snapshots">Não há alterações correspondentes às keywords configuradas.</p>
+					) : (
+						<div className="diff-chunks" role="table" aria-label="Comparações de linhas">
+							{diff.chunks.map((chunk, index) => (
+								<div key={index} className={`diff-chunk ${chunk.type}`}>
+									{chunk.lines.map((line, lineIndex) => (
+										<Row key={lineIndex} line={line} type={chunk.type} />
+									))}
+								</div>
+							))}
+						</div>
+					)}
 				</div>
 			)}
 		</section>

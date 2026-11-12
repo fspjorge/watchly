@@ -14,6 +14,7 @@ export function EditMonitorForm({ monitor, onSaved, onCancel }: Props) {
 	const [frequency, setFrequency] = useState<string>(
 		monitor.frequency_minutes === null ? '' : String(monitor.frequency_minutes),
 	);
+	const [keywords, setKeywords] = useState(monitor.keywords);
 	const [error, setError] = useState<string | null>(null);
 	const [saving, setSaving] = useState(false);
 
@@ -22,13 +23,14 @@ export function EditMonitorForm({ monitor, onSaved, onCancel }: Props) {
 		setError(null);
 		setSaving(true);
 		try {
-			const input: { name?: string; url?: string; frequency_minutes?: number | null } = {};
+			const input: { name?: string; url?: string; frequency_minutes?: number | null; keywords?: string } = {};
 			if (name !== monitor.name) input.name = name;
 			if (url !== monitor.url) input.url = url;
 			const frequencyValue = frequency === '' ? null : Number(frequency);
 			if (frequencyValue !== monitor.frequency_minutes) {
 				input.frequency_minutes = frequencyValue;
 			}
+			if (keywords !== monitor.keywords) input.keywords = keywords;
 			if (Object.keys(input).length === 0) {
 				onCancel();
 				return;
@@ -86,6 +88,16 @@ export function EditMonitorForm({ monitor, onSaved, onCancel }: Props) {
 							</option>
 						))}
 					</select>
+				</label>
+				<label className="field">
+					<span>Keywords (opcional, uma por linha)</span>
+					<textarea
+						value={keywords}
+						onChange={(e) => setKeywords(e.target.value)}
+						disabled={saving}
+						maxLength={1000}
+						rows={2}
+					/>
 				</label>
 				<button className="btn" type="button" onClick={onCancel} disabled={saving}>
 					Cancelar

@@ -128,7 +128,7 @@ export async function serveApi(
 				const monitor = await createMonitor(
 					db,
 					user,
-					body as { name?: unknown; url?: unknown; frequency_minutes?: unknown },
+					body as { name?: unknown; url?: unknown; frequency_minutes?: unknown; keywords?: unknown },
 				);
 				return await json({ monitor }, 201);
 			}
@@ -202,8 +202,8 @@ export async function serveApi(
 /** Valida os campos do PATCH antes de atravessar a fronteira da API. */
 export function parseMonitorPatchBody(
 	body: Record<string, unknown>,
-): { name?: unknown; url?: unknown; frequency_minutes?: number | null } {
-	const patch: { name?: unknown; url?: unknown; frequency_minutes?: number | null } = {};
+): { name?: unknown; url?: unknown; frequency_minutes?: number | null; keywords?: unknown } {
+	const patch: { name?: unknown; url?: unknown; frequency_minutes?: number | null; keywords?: unknown } = {};
 	if (Object.hasOwn(body, 'name')) patch.name = body.name;
 	if (Object.hasOwn(body, 'url')) patch.url = body.url;
 	if (Object.hasOwn(body, 'frequency_minutes')) {
@@ -215,6 +215,7 @@ export function parseMonitorPatchBody(
 		}
 		patch.frequency_minutes = body.frequency_minutes;
 	}
+	if (Object.hasOwn(body, 'keywords')) patch.keywords = body.keywords;
 	return patch;
 }
 
@@ -240,6 +241,9 @@ function serialiseDiff(diff: MonitorDiff): unknown {
 		after: diff.after,
 		addedCount: diff.addedCount,
 		removedCount: diff.removedCount,
+		keywords: diff.keywords,
+		filteredByKeywords: diff.filteredByKeywords,
+		hasMatchingDiff: diff.hasMatchingDiff,
 		chunks: diff.chunks,
 	};
 }

@@ -214,3 +214,50 @@ describe('migração 0006_email_notifications', () => {
 		expect(db.count('SELECT COUNT(*) AS total FROM monitors')).toBe(1);
 	});
 });
+
+describe('migração 0007_brevo_notification_events', () => {
+	it('preserva a outbox existente como evento de alteração e permite eventos sem snapshot', async () => {
+		const db = SqliteQueryable.open();
+		for (const migration of [
+			'0001_initial_schema.sql', '0002_multiuser_ownership.sql', '0003_scheduled_checks.sql',
+			'0004_expired_lease_backoff.sql', '0005_google_daily_usage.sql', '0006_email_notifications.sql',
+		]) applyMigrationFile(db, migration);
+		await db.run('INSERT INTO users (id, auth_subject, email, email_notifications_enabled) VALUES (?, ?, ?, 1)', ['u1', 'sub1', 'u1@example.test']);
+		await db.run('INSERT INTO monitors (id, name, url, user_id) VALUES (?, ?, ?, ?)', ['m1', 'Monitor', 'https://example.test/', 'u1']);
+		await db.run('INSERT INTO snapshots (monitor_id, source_url, content, content_hash) VALUES (?, ?, ?, ?)', ['m1', 'https://example.test/', 'body', 'hash']);
+		await db.run(`INSERT INTO email_notification_outbox (id, monitor_id, user_id, snapshot_id, recipient_email, monitor_name, snapshot_captured_at)
+			VALUES ('e1', 'm1', 'u1', 1, 'u1@example.test', 'Monitor', '2026-11-09 10:00:00')`);
+
+		applyMigrationFile(db, '0007_brevo_notification_events.sql');
+
+		expect(await db.one<Record<string, unknown>>('SELECT * FROM email_notification_outbox WHERE id = ?', ['e1']))
+			.toMatchObject({ id: 'e1', event_key: 'e1', notification_type: 'change', snapshot_id: 1, source_url: 'https://example.test/' });
+		await db.run(`INSERT INTO email_notification_outbox
+			(id, event_key, notification_type, monitor_id, user_id, source_url, recipient_email, monitor_name, snapshot_captured_at)
+			VALUES ('e2', 'e2', 'error', 'm1', 'u1', 'https://example.test/', 'u1@example.test', 'Monitor', '2026-11-09 11:00:00')`);
+		expect(db.count("SELECT COUNT(*) AS total FROM email_notification_outbox WHERE notification_type = 'error' AND snapshot_id IS NULL")).toBe(1);
+	});
+});
+
+describe('migração 0008_monitor_keywords', () => {
+	it('mantém monitores existentes sem filtro e permite configurar keywords', async () => {
+		const db = SqliteQueryable.open();
+		for (const migration of [
+			'0001_initial_schema.sql', '0002_multiuser_ownership.sql', '0003_scheduled_checks.sql',
+			'0004_expired_lease_backoff.sql', '0005_google_daily_usage.sql', '0006_email_notifications.sql',
+			'0007_brevo_notification_events.sql',
+		]) applyMigrationFile(db, migration);
+		await db.run('INSERT INTO users (id, auth_subject, email) VALUES (?, ?, ?)', ['u1', 'sub1', 'u1@example.test']);
+		await db.run('INSERT INTO monitors (id, name, url, user_id) VALUES (?, ?, ?, ?)', [
+			'm1', 'Existing', 'https://example.test/', 'u1',
+		]);
+
+		applyMigrationFile(db, '0008_monitor_keywords.sql');
+
+		expect(await db.one<{ keywords: string }>('SELECT keywords FROM monitors WHERE id = ?', ['m1']))
+			.toEqual({ keywords: '' });
+		await db.run('UPDATE monitors SET keywords = ? WHERE id = ?', ['price\nstock', 'm1']);
+		expect(await db.one<{ keywords: string }>('SELECT keywords FROM monitors WHERE id = ?', ['m1']))
+			.toEqual({ keywords: 'price\nstock' });
+	});
+});

@@ -239,6 +239,8 @@ function feedbackFor(outcome: CheckOutcome, message: string): MonitorFeedback {
 			return { kind: 'ok', text: message };
 		case 'changed':
 			return { kind: 'info', text: message };
+		case 'filtered':
+			return { kind: 'info', text: message };
 		case 'error':
 			return { kind: 'error', text: message };
 	}

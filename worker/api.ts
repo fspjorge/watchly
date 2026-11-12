@@ -1,4 +1,4 @@
-import { diffLines, type DiffChunk } from './diff.ts';
+import { diffLines, diffMatchesKeywords, filterDiffByKeywords, type DiffChunk } from './diff.ts';
 import { extractTextFromHtml } from './extract.ts';
 import { fetchPage, ScrapeError, validateMonitorUrl } from './scrape.ts';
 import type { Queryable } from './db.ts';
@@ -23,6 +23,31 @@ export async function sha256Hex(content: string): Promise<string> {
 const MIN_CHECK_INTERVAL_MS = 2000;
 const INVALID_FREQUENCY_MESSAGE =
 	'Frequência inválida. Valores aceites: manual (null), 15, 30, 60, 360, 720 ou 1440 minutos.';
+const INVALID_KEYWORDS_MESSAGE =
+	'Keywords inválidas. Indica até 10 termos, um por linha, com o máximo de 80 caracteres cada.';
+
+function validateKeywords(input: unknown): string {
+	if (input === undefined || input === null) return '';
+	if (typeof input !== 'string' || input.length > 1000) throw new ApiError(400, INVALID_KEYWORDS_MESSAGE);
+	const keywords = input.split(/\r?\n/).map((keyword) => keyword.trim()).filter(Boolean);
+	if (keywords.length > 10 || keywords.some((keyword) => keyword.length > 80)) {
+		throw new ApiError(400, INVALID_KEYWORDS_MESSAGE);
+	}
+	const unique: string[] = [];
+	const seen = new Set<string>();
+	for (const keyword of keywords) {
+		const normalized = keyword.normalize('NFKC').toLocaleLowerCase('pt-PT');
+		if (!seen.has(normalized)) {
+			seen.add(normalized);
+			unique.push(keyword);
+		}
+	}
+	return unique.join('\n');
+}
+
+function storedKeywords(value: string): string[] {
+	return value.split('\n').map((keyword) => keyword.trim()).filter(Boolean);
+}
 
 /** Partilha entre criação e PATCH a regra de início/reinício do agendamento. */
 function nextCheckAtAfterConfigChange(
@@ -40,7 +65,7 @@ function nextCheckAtAfterConfigChange(
 	return previousFrequency === null ? nowSeconds : nowSeconds + nextFrequency * 60;
 }
 
-export type MonitorStatus = 'pending' | 'unchanged' | 'changed' | 'error';
+export type MonitorStatus = 'pending' | 'unchanged' | 'changed' | 'filtered' | 'error';
 
 export type MonitorRow = {
 	id: string;
@@ -53,17 +78,19 @@ export type MonitorRow = {
 	last_error: string | null;
 	frequency_minutes: number | null;
 	next_check_at: number | null;
+	keywords: string;
 };
 
 /** Colunas lidas em qualquer SELECT de monitorizações. */
 const MONITOR_COLUMNS =
 	'id, name, url, user_id, created_at, last_checked_at, last_status, last_error, ' +
-	'frequency_minutes, next_check_at';
+	'frequency_minutes, next_check_at, keywords';
 
 export type MonitorCheckResult =
 	| { outcome: 'initial'; message: string }
 	| { outcome: 'unchanged'; message: string }
 	| { outcome: 'changed'; message: string }
+	| { outcome: 'filtered'; message: string }
 	| { outcome: 'error'; message: string };
 
 export type SnapshotRow = {
@@ -125,7 +152,7 @@ function validateUrlOr400(raw: unknown): string {
 export async function createMonitor(
 	db: Queryable,
 	user: UserRecord,
-	input: { name?: unknown; url?: unknown; frequency_minutes?: unknown },
+	input: { name?: unknown; url?: unknown; frequency_minutes?: unknown; keywords?: unknown },
 ): Promise<MonitorRow> {
 	const name = validateName(input.name);
 	const url = validateUrlOr400(input.url);
@@ -137,6 +164,7 @@ export async function createMonitor(
 		}
 		frequency = requestedFrequency;
 	}
+	const keywords = validateKeywords(input.keywords);
 	const nowSeconds = Math.floor(Date.now() / 1000);
 	const nextCheckAt = nextCheckAtAfterConfigChange(null, null, frequency, false, nowSeconds);
 	const id = crypto.randomUUID();
@@ -144,9 +172,9 @@ export async function createMonitor(
 	await db
 		.run(
 			`INSERT INTO monitors
-			   (id, name, url, user_id, last_status, frequency_minutes, next_check_at)
-			 VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
-			[id, name, url, user.id, frequency, nextCheckAt],
+			   (id, name, url, user_id, last_status, frequency_minutes, next_check_at, keywords)
+			 VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
+			[id, name, url, user.id, frequency, nextCheckAt, keywords],
 		);
 
 	const created = await getOwnedMonitor(db, user, id);
@@ -194,15 +222,16 @@ export async function updateMonitor(
 	db: Queryable,
 	user: UserRecord,
 	id: string,
-	input: { name?: unknown; url?: unknown; frequency_minutes?: unknown },
+	input: { name?: unknown; url?: unknown; frequency_minutes?: unknown; keywords?: unknown },
 ): Promise<MonitorRow> {
 	const monitor = await requireOwnedMonitor(db, user, id);
 
 	const hasName = input.name !== undefined;
 	const hasUrl = input.url !== undefined;
 	const hasFrequency = input.frequency_minutes !== undefined;
-	if (!hasName && !hasUrl && !hasFrequency) {
-		throw new ApiError(400, 'Indica pelo menos o nome, o URL ou a frequência a actualizar.');
+	const hasKeywords = input.keywords !== undefined;
+	if (!hasName && !hasUrl && !hasFrequency && !hasKeywords) {
+		throw new ApiError(400, 'Indica pelo menos o nome, o URL, a frequência ou as keywords a actualizar.');
 	}
 
 	const name = hasName ? validateName(input.name) : monitor.name;
@@ -224,6 +253,8 @@ export async function updateMonitor(
 		frequencyChanged =
 			frequency !== monitor.frequency_minutes;
 	}
+	const keywords = hasKeywords ? validateKeywords(input.keywords) : monitor.keywords;
+	const keywordsChanged = hasKeywords && keywords !== monitor.keywords;
 
 	const nowSeconds = Math.floor(Date.now() / 1000);
 	// Renomear sem alterar URL/frequência preserva next_check_at; a criação e
@@ -254,6 +285,10 @@ export async function updateMonitor(
 	if (frequencyChanged) {
 		assignments.push('frequency_minutes = ?');
 		params.push(frequency);
+	}
+	if (keywordsChanged) {
+		assignments.push('keywords = ?');
+		params.push(keywords);
 	}
 	// next_check_at escreve-se apenas quando muda (evita UPDATE redundante).
 	if (nextCheckAt !== monitor.next_check_at) {
@@ -525,6 +560,19 @@ export async function performCheck(
 		return { outcome: 'unchanged', message: 'Sem alterações.' };
 	}
 
+	const keywords = storedKeywords(monitor.keywords);
+	const contentDiff = diffLines(latest.content.split('\n'), normalized.split('\n'));
+	if (keywords.length > 0 && !diffMatchesKeywords(contentDiff, keywords)) {
+		// A nova versão torna-se a base mesmo quando só contém alterações
+		// irrelevantes, para que mudanças antigas não se acumulem no próximo diff.
+		const persisted = await persistCheckResults(db, {
+			id, expectedUrl: monitor.url, leaseToken, status: 'filtered',
+			snapshot: { sourceUrl: monitor.url, content: normalized, contentHash },
+		});
+		if (!persisted) throw new LeaseLostError();
+		return { outcome: 'filtered', message: 'A página mudou, mas nenhuma keyword corresponde à diferença.' };
+	}
+
 	const persisted = await persistCheckResults(db, {
 		id, expectedUrl: monitor.url, leaseToken, status: 'changed',
 		snapshot: { sourceUrl: monitor.url, content: normalized, contentHash },
@@ -590,6 +638,9 @@ export type MonitorDiff = {
 	chunks: DiffChunk[];
 	addedCount: number;
 	removedCount: number;
+	keywords: string[];
+	filteredByKeywords: boolean;
+	hasMatchingDiff: boolean;
 };
 
 /**
@@ -613,18 +664,25 @@ export async function getMonitorDiff(
 	if (snapshots.length < 2) return null;
 
 	const [after, before] = snapshots;
-	const chunks = diffLines(before.content.split('\n'), after.content.split('\n'));
+	const allChunks = diffLines(before.content.split('\n'), after.content.split('\n'));
+	const keywords = storedKeywords(monitor.keywords);
+	const chunks = filterDiffByKeywords(allChunks, keywords);
+	const addedCount = chunks
+		.filter((chunk) => chunk.type === 'added')
+		.reduce((accumulator, chunk) => accumulator + chunk.lines.length, 0);
+	const removedCount = chunks
+		.filter((chunk) => chunk.type === 'removed')
+		.reduce((accumulator, chunk) => accumulator + chunk.lines.length, 0);
 
 	return {
 		monitor,
 		before: { id: before.id, captured_at: before.captured_at },
 		after: { id: after.id, captured_at: after.captured_at },
 		chunks,
-		addedCount: chunks
-			.filter((chunk) => chunk.type === 'added')
-			.reduce((accumulator, chunk) => accumulator + chunk.lines.length, 0),
-		removedCount: chunks
-			.filter((chunk) => chunk.type === 'removed')
-			.reduce((accumulator, chunk) => accumulator + chunk.lines.length, 0),
+		addedCount,
+		removedCount,
+		keywords,
+		filteredByKeywords: keywords.length > 0,
+		hasMatchingDiff: addedCount > 0 || removedCount > 0,
 	};
 }
