@@ -1,0 +1,9 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    entrypoint: sh
+    timeout: 900s
+    env:
+      - IMAGE_URI=europe-southwest1-docker.pkg.dev/watchly-514121/cloud-run-source-deploy/watchly-nodriver-sandbox-probe:${_IMAGE_TAG}
+    args:
+      - scripts/build-sandbox-probe.sh
+timeout: 1200s

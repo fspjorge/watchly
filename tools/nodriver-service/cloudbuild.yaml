@@ -1,0 +1,12 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    entrypoint: sh
+    timeout: 900s
+    env:
+      - BUILD_ID=$BUILD_ID
+      - TEST_WORTEN=${_TEST_WORTEN}
+    args:
+      - scripts/cloudbuild-smoke.sh
+timeout: 1200s
+substitutions:
+  _TEST_WORTEN: "false"

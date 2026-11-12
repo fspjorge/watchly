@@ -1,0 +1,6 @@
+FROM watchly-nodriver-render:cloud-build-test
+
+WORKDIR /app
+COPY --chown=app:app sandbox_probe.py ./sandbox_probe.py
+USER app
+ENTRYPOINT ["python", "sandbox_probe.py"]
